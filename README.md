@@ -71,14 +71,14 @@ Examples (choose one provider):
 
 ```bash
 # ChatGPT (OpenAI)
-python experiments/exp1_causal_ablation.py --data data/processed/medqa.csv --model chatgpt --out experiments/outputs/exp1_medqa_chatgpt.csv
+python experiments/exp1_causal_ablation.py --data data/processed/medqa.csv --model chatgpt --out results/exp1_medqa_chatgpt.csv
 
 # Claude (Anthropic)
-python experiments/exp1_causal_ablation.py --data data/processed/medqa.csv --model claude --out experiments/outputs/exp1_medqa_claude.csv
+python experiments/exp1_causal_ablation.py --data data/processed/medqa.csv --model claude --out results/exp1_medqa_claude.csv
 
 # Gemini (Google)
-python experiments/exp1_causal_ablation.py --data data/processed/medqa.csv --model gemini --out experiments/outputs/exp1_medqa_gemini.csv
+python experiments/exp1_causal_ablation.py --data data/processed/medqa.csv --model gemini --out results/exp1_medqa_gemini.csv
 
 # Grok (xAI)
-python experiments/exp1_causal_ablation.py --data data/processed/medqa.csv --model grok --out experiments/outputs/exp1_medqa_grok.csv
+python experiments/exp1_causal_ablation.py --data data/processed/medqa.csv --model grok --out results/exp1_medqa_grok.csv
 ```
