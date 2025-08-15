@@ -3,10 +3,11 @@ Experiment 1: Causal Ablation
 
 Scaffold script to run causal ablation experiments on processed datasets.
 
-Supports input and output as either JSON (.json) or CSV (.csv).
+Supports input as JSON (.json), CSV (.csv), or Parquet (.parquet), and
+output as JSON (.json) or CSV (.csv).
 
 Usage:
-  python experiments/exp1_causal_ablation.py --data data/processed/medqa.csv --model gpt-4o --out experiments/outputs/exp1_medqa.csv
+  python experiments/exp1_causal_ablation.py --data data/processed/medqa.csv --model gpt-5 --out results/exp1_medqa.csv
 """
 
 from __future__ import annotations
@@ -17,6 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 import pandas as pd
+import sys
+from pathlib import Path as _Path
+
+# Ensure project root is on sys.path so `models` is importable when running as a script
+sys.path.append(str(_Path(__file__).resolve().parents[1]))
 from models import create_model_client
 
 
@@ -36,28 +42,31 @@ def load_examples(data_path: Path) -> List[Dict[str, Any]]:
     if suffix == ".csv":
         df = pd.read_csv(data_path)
         return df.to_dict(orient="records")
-    raise ValueError(f"Unsupported data format: {suffix}. Use .json or .csv")
+    if suffix in {".parquet", ".parq"}:
+        # Requires pyarrow or fastparquet
+        df = pd.read_parquet(data_path)
+        return df.to_dict(orient="records")
+    raise ValueError(f"Unsupported data format: {suffix}. Use .json, .csv, or .parquet")
 
 
 def run_causal_ablation(examples: List[Dict[str, Any]], model_name: str) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     client = create_model_client(model_name)
     for ex in examples:
-        # TODO: implement proper ablation. For now, simple prompt over question/context/options
+        # Generic prompt over structured QA fields
         question = ex.get("question")
         context = ex.get("context", "")
         options = ex.get("options")
-        prompt_parts = [
-            "You are a careful medical assistant. Answer faithfully.",
-            f"Question: {question}",
-        ]
+        system_prompt = "You are a careful medical assistant. Answer faithfully."
+        prompt_parts = [f"Question: {question}"]
         if context:
             prompt_parts.append(f"Context: {context}")
         if options:
             prompt_parts.append(f"Options: {options}")
         prompt = "\n".join(prompt_parts)
+
         try:
-            completion = client.generate(prompt, temperature=0.0, max_tokens=256)
+            completion = client.generate(prompt, temperature=0.0, max_tokens=256, system_prompt=system_prompt)
         except Exception as e:  # keep experiments running
             completion = f"ERROR: {e}"
         results.append({
@@ -72,7 +81,7 @@ def run_causal_ablation(examples: List[Dict[str, Any]], model_name: str) -> List
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, required=True)
-    parser.add_argument("--model", type=str, default="gpt-4o")
+    parser.add_argument("--model", type=str, default="gemini")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()

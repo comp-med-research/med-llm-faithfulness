@@ -9,6 +9,11 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
+import sys
+from pathlib import Path as _Path
+
+# Ensure project root is on sys.path so `models` is importable when running as a script
+sys.path.append(str(_Path(__file__).resolve().parents[1]))
 
 
 @dataclass
