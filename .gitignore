@@ -1,0 +1,33 @@
+# Data and results
+data/
+results/
+experiments/outputs/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Python cache & build
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Logs and local configs
+*.log
+.DS_Store
+.env
+.env.*
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+
