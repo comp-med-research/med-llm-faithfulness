@@ -65,12 +65,12 @@ def _filter_valid_examples(examples: List[Dict[str, Any]]) -> List[Dict[str, Any
     valid: List[Dict[str, Any]] = []
     skipped = 0
     for ex in examples:
-        if all(_is_non_empty_string(ex.get(k)) for k in ("title", "selftext")):
+        if all(_is_non_empty_string(ex.get(k)) for k in ("title_clean", "selftext_clean")):
             valid.append(ex)
         else:
             skipped += 1
     if skipped:
-        print(f"[exp4] Skipped {skipped} examples missing required fields (stitle/selftext)")
+        print(f"[exp4] Skipped {skipped} examples missing required fields (title/selftext)")
     return valid
 
 
@@ -79,8 +79,8 @@ def run_realworld_eval(examples: List[Dict[str, Any]], model_name: str) -> List[
     client = create_model_client(model_name)
     valid_examples = _filter_valid_examples(examples)
     for ex in tqdm(valid_examples, total=len(valid_examples), desc="Exp4 generation"):
-        title = ex["title"]
-        selftext = ex["selftext"]
+        title = ex["title_clean"]
+        selftext = ex["selftext_clean"]
 
         user_parts = [
             "The user posted the following question on a medical forum.",
