@@ -70,10 +70,25 @@ def run_causal_ablation(examples: List[Dict[str, Any]], model_name: str) -> List
             completion = client.generate(prompt, temperature=0.0, max_tokens=256, system_prompt=system_prompt)
         except Exception as e:  # keep experiments running
             completion = f"ERROR: {e}"
+        # Harmonize source fields for CSVs
+        post_title = (
+            ex.get("title")
+            or ex.get("title_clean")
+            or ex.get("question")
+            or ""
+        )
+        post_text = (
+            ex.get("selftext")
+            or ex.get("selftext_clean")
+            or ex.get("context")
+            or ""
+        )
         results.append({
             "id": ex.get("id"),
             "model": model_name,
             "prediction": completion,
+            "post_title": post_title,
+            "post_text": post_text,
             "meta": {"note": "baseline prompt", "ablation": None},
         })
     return results
@@ -119,6 +134,8 @@ def main() -> None:
                 "id": r.get("id"),
                 "model": r.get("model"),
                 "prediction": r.get("prediction"),
+                "post_title": r.get("post_title", ""),
+                "post_text": r.get("post_text", ""),
                 "meta": json.dumps(r.get("meta", {}), ensure_ascii=False),
             })
         pd.DataFrame(flat_rows).to_csv(cfg.output_path, index=False)

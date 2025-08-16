@@ -106,6 +106,8 @@ def run_realworld_eval(examples: List[Dict[str, Any]], model_name: str) -> List[
             "id": ex.get("q_id"),
             "model": model_name,
             "prediction": completion,
+            "post_title": title,
+            "post_text": selftext,
             "meta": {"note": "real-world eval"},
         })
     return results
@@ -176,6 +178,8 @@ def main() -> None:
                 "id": r.get("id"),
                 "model": r.get("model"),
                 "prediction": r.get("prediction"),
+                "post_title": r.get("post_title", ""),
+                "post_text": r.get("post_text", ""),
                 "meta": json.dumps(r.get("meta", {}), ensure_ascii=False),
             })
         pd.DataFrame(flat_rows).to_csv(cfg.output_path, index=False)

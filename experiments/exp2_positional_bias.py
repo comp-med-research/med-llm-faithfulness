@@ -33,10 +33,24 @@ def load_examples(data_path: Path) -> List[Dict[str, Any]]:
 def run_positional_bias(examples: List[Dict[str, Any]], model_name: str) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     for ex in examples:
+        post_title = (
+            ex.get("title")
+            or ex.get("title_clean")
+            or ex.get("question")
+            or ""
+        )
+        post_text = (
+            ex.get("selftext")
+            or ex.get("selftext_clean")
+            or ex.get("context")
+            or ""
+        )
         results.append({
             "id": ex.get("id"),
             "model": model_name,
             "prediction": None,
+            "post_title": post_title,
+            "post_text": post_text,
             "meta": {"note": "TODO: implement positional perturbations"},
         })
     return results

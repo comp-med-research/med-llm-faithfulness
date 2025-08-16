@@ -77,10 +77,15 @@ def read_and_standardize(file_path: Path) -> pd.DataFrame:
         inferred = _infer_model_from_path(file_path)
         df["model"] = inferred
     df["model"] = df["model"].map(_normalize_model_name)
+    # Optional enrichment columns
+    for opt in ["post_title", "post_text"]:
+        if opt not in df.columns:
+            df[opt] = ""
     if "meta" not in df.columns:
         df["meta"] = ""
-    # Keep only required columns in canonical order
-    return df[["id", "model", "prediction", "meta"]]
+    # Keep canonical order, including optional columns if present
+    cols = ["id", "model", "prediction", "post_title", "post_text", "meta"]
+    return df[cols]
 
 
 def collate(files: List[Path]) -> Tuple[pd.DataFrame, int]:
@@ -88,7 +93,7 @@ def collate(files: List[Path]) -> Tuple[pd.DataFrame, int]:
     for fp in files:
         frames.append(read_and_standardize(fp))
     if not frames:
-        return pd.DataFrame(columns=["id", "model", "prediction", "meta"]), 0
+        return pd.DataFrame(columns=["id", "model", "prediction", "post_title", "post_text", "meta"]), 0
     combined = pd.concat(frames, ignore_index=True)
     # Drop exact duplicates on (id, model) keeping first
     before = len(combined)
