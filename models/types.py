@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Protocol
 
 
 class ModelClient(Protocol):
-    def generate(self, prompt: str, *, temperature: float = 0.0, max_tokens: int = 512, system_prompt: Optional[str] = None) -> str:
+    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         ...
 
 

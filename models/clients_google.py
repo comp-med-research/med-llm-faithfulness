@@ -22,7 +22,7 @@ class GoogleGeminiClient:
     """
 
     def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None) -> None:
-        self.model = os.getenv("GOOGLE_GEMINI_MODEL", "gemini-2.0-flash-001") or model
+        self.model = model or os.getenv("GOOGLE_GEMINI_MODEL")
         print(f"Using model: {self.model}") 
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
         if not self.api_key:

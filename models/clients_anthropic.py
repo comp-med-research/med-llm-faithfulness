@@ -15,19 +15,18 @@ class AnthropicChatClient:
         _dotenv_path = find_dotenv(usecwd=True)
         if _dotenv_path:
             load_dotenv(_dotenv_path)
-        self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
+        self.model = model or os.getenv("ANTHROPIC_MODEL")
+        print(f"Using model: {self.model}")
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable is required")
         self.client = anthropic.Anthropic(api_key=self.api_key)
 
-    def generate(self, prompt: str, *, temperature: float = 0.0, max_tokens: int = 512, system_prompt: Optional[str] = None) -> str:
+    def generate(self, prompt: str) -> str:
         # Anthropic expects system as separate param and content as a list of blocks
         msg = self.client.messages.create(
             model=self.model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_prompt or None,
+            max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )
         return "".join(part.text for part in msg.content)

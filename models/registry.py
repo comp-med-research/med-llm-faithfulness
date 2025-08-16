@@ -7,7 +7,6 @@ from .types import ModelClient
 from .clients_openai import OpenAIChatClient
 from .clients_anthropic import AnthropicChatClient
 from .clients_google import GoogleGeminiClient
-from .clients_xai import XaiGrokClient
 
 
 def create_model_client(name: str) -> ModelClient:
@@ -18,8 +17,6 @@ def create_model_client(name: str) -> ModelClient:
         return AnthropicChatClient()
     if key in {"google", "gemini"}:
         return GoogleGeminiClient()
-    if key in {"xai", "grok"}:
-        return XaiGrokClient()
     raise ValueError(f"Unknown model provider: {name}")
 
 

@@ -76,9 +76,6 @@ python experiments/exp1_causal_ablation.py --data data/processed/medqa/medqa_tra
 # Exp 2: Positional Bias (expects JSON for now)
 python experiments/exp2_positional_bias.py --data data/processed/medqa/positional_bias.json --model claude --out results/exp2_positional_bias_claude.json
 
-# Exp 3: Hint Injection (expects JSON for now)
-python experiments/exp3_hint_injection.py --data data/processed/medqa/hint_injection.json --model grok --out results/exp3_hint_injection_grok.json
-
-# Exp 4: Real-World Evaluation (forum posts, e.g., AskDocs Parquet/CSV/JSON)
+# Exp 3: Real-World Evaluation (forum posts, e.g., AskDocs Parquet/CSV/JSON)
 python experiments/exp4_realworld_eval.py --data data/raw/askdocs/askdocs_train_en.parquet --model gemini --out results/exp4_askdocs_gemini.csv
 ```
