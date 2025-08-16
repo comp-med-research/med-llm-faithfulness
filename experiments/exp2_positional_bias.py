@@ -14,6 +14,7 @@ from pathlib import Path as _Path
 
 # Ensure project root is on sys.path so `models` is importable when running as a script
 sys.path.append(str(_Path(__file__).resolve().parents[1]))
+from utils.output_paths import compute_output_path
 
 
 @dataclass
@@ -44,12 +45,27 @@ def run_positional_bias(examples: List[Dict[str, Any]], model_name: str) -> List
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, required=True)
-    parser.add_argument("--model", type=str, default="gpt-4o")
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--model", type=str, default="gpt-5")
+    parser.add_argument("--out", type=Path, required=False, help="Optional output path. If omitted or a directory, outputs go to results/exp2/<model>/<timestamp>.csv with a .config.json alongside.")
     parser.add_argument("--seed", type=int, default=0)
+    # Timestamped filenames are now default; no explicit versioning flag needed
     args = parser.parse_args()
 
-    cfg = Exp2Config(data_path=args.data, model_name=args.model, output_path=args.out, seed=args.seed)
+    explicit_ext = (args.out.suffix if (args.out and args.out.suffix) else None)
+    output_path = compute_output_path(
+        out_arg=args.out if args.out else None,
+        exp_name="exp2_position",
+        model_name=args.model,
+        data_path=args.data,
+        force_version=False,
+        organize_by_model=True,
+        organize_by_experiment=True,
+        default_extension=".csv",
+        explicit_extension=explicit_ext,
+        append_timestamp=True,
+    )
+
+    cfg = Exp2Config(data_path=args.data, model_name=args.model, output_path=output_path, seed=args.seed)
     examples = load_examples(cfg.data_path)
     results = run_positional_bias(examples, cfg.model_name)
 

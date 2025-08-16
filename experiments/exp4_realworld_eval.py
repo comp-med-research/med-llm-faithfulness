@@ -23,6 +23,7 @@ import datetime as _dt
 # Ensure project root is on sys.path so `models` is importable when running as a script
 sys.path.append(str(_Path(__file__).resolve().parents[1]))
 from models import create_model_client
+from utils.output_paths import compute_output_path
 
 
 @dataclass
@@ -61,23 +62,24 @@ def _is_non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
-def _filter_valid_examples(examples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    valid: List[Dict[str, Any]] = []
-    skipped = 0
-    for ex in examples:
-        if all(_is_non_empty_string(ex.get(k)) for k in ("title_clean", "selftext_clean")):
-            valid.append(ex)
-        else:
-            skipped += 1
-    if skipped:
-        print(f"[exp4] Skipped {skipped} examples missing required fields (title/selftext)")
-    return valid
+# def _filter_valid_examples(examples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+#     valid: List[Dict[str, Any]] = []
+#     skipped = 0
+#     for ex in examples:
+#         if all(_is_non_empty_string(ex.get(k)) for k in ("title_clean", "selftext_clean")):
+#             valid.append(ex)
+#         else:
+#             skipped += 1
+#     if skipped:
+#         print(f"[exp4] Skipped {skipped} examples missing required fields (title/selftext)")
+#     return valid
 
 
 def run_realworld_eval(examples: List[Dict[str, Any]], model_name: str) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     client = create_model_client(model_name)
-    valid_examples = _filter_valid_examples(examples)
+    # valid_examples = _filter_valid_examples(examples)
+    valid_examples = examples
     for ex in tqdm(valid_examples, total=len(valid_examples), desc="Exp4 generation"):
         title = ex["title_clean"]
         selftext = ex["selftext_clean"]
@@ -131,19 +133,31 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--model", type=str, default="gemini")
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=False, help="Optional output path. If omitted or a directory, outputs go to results/exp4/<model>/exp4_askdocs_<data>_<model>[_vNNN].csv with a .config.json alongside.")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument(
-        "--append-timestamp",
-        action="store_true",
-        help="Append UTC timestamp (YYYYMMDDTHHMMSSZ) to the output filename",
-    )
+    # Timestamped filenames are now default; no flag needed
+    # Numeric versioning retained for backward compat via utility's force flag (not exposed here)
+    # Always organize by experiment and model to keep results separated
     args = parser.parse_args()
 
     ts = _dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    output_path = args.out
-    if args.append_timestamp:
-        output_path = output_path.with_name(f"{output_path.stem}_{ts}{output_path.suffix}")
+    # Determine explicit extension from user-provided --out (if any)
+    explicit_ext = (args.out.suffix if (args.out and args.out.suffix) else None)
+    # Compute a non-overwriting output path. If user provided a filename, we keep it.
+    # If a directory or omitted, we build results/exp4/<model>/<timestamp>.csv
+    output_path = compute_output_path(
+        out_arg=args.out if args.out else None,
+        exp_name="exp4_askdocs",
+        model_name=args.model,
+        data_path=args.data,
+        force_version=False,
+        organize_by_model=True,
+        organize_by_experiment=True,
+        default_extension=".csv",
+        explicit_extension=explicit_ext,
+        append_timestamp=True,
+    )
+    # Timestamp already included by compute_output_path
 
     cfg = Exp4Config(data_path=args.data, model_name=args.model, output_path=output_path, seed=args.seed)
     examples = load_examples(cfg.data_path)
