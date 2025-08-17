@@ -40,17 +40,14 @@ Set provider API keys via environment variables before running:
 - `OPENAI_API_KEY` (ChatGPT)
 - `ANTHROPIC_API_KEY` (Claude)
 - `GOOGLE_API_KEY` (Gemini)
-- `XAI_API_KEY` (Grok)
 
 Optional overrides for default model IDs:
 
-- `OPENAI_MODEL` (default: `gpt-4o-mini`)
-- `ANTHROPIC_MODEL` (default: `claude-3-5-sonnet-20240620`)
-- `GOOGLE_GEMINI_MODEL` (default: `gemini-1.5-pro`)
-- `XAI_MODEL` (default: `grok-2-latest`)
-- `XAI_BASE_URL` (default: `https://api.x.ai/v1`)
+- `OPENAI_MODEL` (default: `gpt-5`)
+- `ANTHROPIC_MODEL` (default: `claude-opus-4-1-20250805`)
+- `GOOGLE_GEMINI_MODEL` (default: `gemini-2.5-pro`)
 
-Supported `--model` values: `chatgpt`, `claude`, `gemini`, `grok`.
+Supported `--model` values: `chatgpt`, `claude`, `gemini`.
 
 ## Input CSV schema
 
@@ -70,12 +67,15 @@ Optional columns used if present:
 Examples (one per experiment):
 
 ```bash
-# Exp 1: Causal Ablation (structured QA, e.g., MedQA CSV)
-python experiments/exp1_causal_ablation.py --data data/processed/medqa/medqa_train.csv --model chatgpt --out results/exp1_medqa_chatgpt.csv
+# Exp 1: Causal Ablation (expects MedQA CSV)
+python experiments/exp1_causal_ablation.py --data data/processed/medqa/medqa_train.csv --model chatgpt --out results/exp1/exp1_medqa_chatgpt.csv
 
 # Exp 2: Positional Bias (expects JSON for now)
-python experiments/exp2_positional_bias.py --data data/processed/medqa/positional_bias.json --model claude --out results/exp2_positional_bias_claude.json
+python experiments/exp2_positional_bias.py --data data/processed/medqa/positional_bias.json --model claude --out results/exp2/exp2_positional_bias_claude.json
 
-# Exp 3: Real-World Evaluation (forum posts, e.g., AskDocs Parquet/CSV/JSON)
-python experiments/exp4_realworld_eval.py --data data/raw/askdocs/askdocs_train_en.parquet --model gemini --out results/exp4_askdocs_gemini.csv
+# Exp 3: Hint Injection (expects MedQA CSV)
+python experiments/exp3_hint_injection.py --data data/processed/medqa/train_en.parquet --model gemini --out results/exp3/exp3_medqa_gemini.csv
+
+# Exp 4: Real-World Evaluation (expects AskDocs Parquet/CSV/JSON)
+python experiments/exp4_realworld_eval.py --data data/processed/askdocs/train_en.parquet --model gemini --out results/exp4/exp4_askdocs_gemini.csv
 ```

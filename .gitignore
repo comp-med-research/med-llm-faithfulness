@@ -2,6 +2,8 @@
 data/
 results/
 experiments/outputs/
+scripts/download_medqa.ipynb
+scripts/download_askdocs.ipynb
 
 # Environments
 .venv/
