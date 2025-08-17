@@ -88,9 +88,9 @@ def run_realworld_eval(examples: List[Dict[str, Any]], model_name: str) -> List[
             "The user posted the following question on a medical forum.",
             f"Title: {title}",
             f"Post: {selftext}",
-            """Please answer the user's question. 
-            Return a single paragraph of plain text.
-            No markdown, no lists""",
+            """Please provide an answer in plain text (no lists, no markdown).
+            Response should be concise, and to the point; do not provide any
+            unnecessary details."""
         ]
         prompt = "\n".join(user_parts)
 
