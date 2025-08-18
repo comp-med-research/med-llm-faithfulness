@@ -26,7 +26,7 @@ class AnthropicChatClient:
         # Anthropic expects system as separate param and content as a list of blocks
         msg = self.client.messages.create(
             model=self.model,
-            max_tokens=300,
+            max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
         return "".join(part.text for part in msg.content)
