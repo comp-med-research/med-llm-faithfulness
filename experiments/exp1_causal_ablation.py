@@ -614,8 +614,20 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     client = create_model_client(provider_key)
 
-    rows_out: List[Dict[str, Any]] = []
-    max_ablations_observed = 0
+    # Chunked output buffers
+    CHUNK_SIZE = 10
+    chunk_rows: List[Dict[str, Any]] = []
+    part_index = 1
+    # Predefine consistent columns across all parts using cfg.max_steps as the upper bound
+    base_cols = [
+        "id", "model", "question", "A", "B", "C", "D", "E",
+        "ground_truth", "baseline_answer", "baseline_steps_json",
+    ]
+    ablation_cols: List[str] = []
+    for i in range(1, int(cfg.max_steps) + 1):
+        ablation_cols.append(f"ablation_{i}_answer")
+        ablation_cols.append(f"ablation_{i}_steps_json")
+    all_cols = base_cols + ablation_cols
 
     for _, row in tqdm(df_proc.iterrows(), total=len(df_proc), desc="Examples"):
         q_text = str(row["question"]) if not pd.isna(row["question"]) else ""
@@ -632,7 +644,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         # Ablations
         ablations = run_ablation_series(client, cfg, q_text, options, baseline_steps)
-        max_ablations_observed = max(max_ablations_observed, len(ablations))
 
         out_row: Dict[str, Any] = {
             "id": row["id"],
@@ -654,30 +665,42 @@ def main(argv: Optional[List[str]] = None) -> int:
                 out_row[f"ablation_{k}_answer"] = ab.get("ablated_answer", "")
                 out_row[f"ablation_{k}_steps_json"] = json.dumps(ab.get("ablated_steps", []), ensure_ascii=False)
 
-        rows_out.append(out_row)
+        chunk_rows.append(out_row)
+
+        # If chunk full, write a part CSV
+        if len(chunk_rows) >= CHUNK_SIZE:
+            part_df = pd.DataFrame(chunk_rows)
+            for col in ablation_cols:
+                if col not in part_df.columns:
+                    part_df[col] = ""
+            part_df = part_df.reindex(columns=all_cols)
+
+            os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+            stem, _ = os.path.splitext(args.output)
+            part_path = f"{stem}.part{part_index:04d}.csv"
+            part_df.to_csv(part_path, index=False)
+            print(f"[exp1] Wrote part {part_index:04d} with {len(part_df)} rows to: {part_path}")
+
+            # Reset chunk buffer
+            chunk_rows = []
+            part_index += 1
 
         if cfg.sleep and cfg.sleep > 0:
             time.sleep(cfg.sleep)
 
-    # Build ordered columns per spec: id, model, question, A-E, ground_truth, baseline_answer, baseline_steps_json, ablation_1_answer..N
-    base_cols = [
-        "id", "model", "question", "A", "B", "C", "D", "E",
-        "ground_truth", "baseline_answer", "baseline_steps_json",
-    ]
-    ablation_cols = []
-    for i in range(1, max_ablations_observed + 1):
-        ablation_cols.append(f"ablation_{i}_answer")
-        ablation_cols.append(f"ablation_{i}_steps_json")
-    all_cols = base_cols + ablation_cols
-    out_df = pd.DataFrame(rows_out)
-    # Ensure all ablation columns exist even if missing in some rows
-    for col in ablation_cols:
-        if col not in out_df.columns:
-            out_df[col] = ""
-    out_df = out_df.reindex(columns=all_cols)
+    # Write trailing partial chunk if any
+    if chunk_rows:
+        part_df = pd.DataFrame(chunk_rows)
+        for col in ablation_cols:
+            if col not in part_df.columns:
+                part_df[col] = ""
+        part_df = part_df.reindex(columns=all_cols)
 
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    out_df.to_csv(args.output, index=False)
+        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        stem, _ = os.path.splitext(args.output)
+        part_path = f"{stem}.part{part_index:04d}.csv"
+        part_df.to_csv(part_path, index=False)
+        print(f"[exp1] Wrote part {part_index:04d} with {len(part_df)} rows to: {part_path}")
 
     return 0
 

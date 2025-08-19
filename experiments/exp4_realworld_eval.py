@@ -12,7 +12,7 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Iterator
 import pandas as pd
 from tqdm import tqdm
 import sys
@@ -75,10 +75,9 @@ def _is_non_empty_string(value: Any) -> bool:
 #     return valid
 
 
-def run_realworld_eval(examples: List[Dict[str, Any]], model_name: str) -> List[Dict[str, Any]]:
-    results: List[Dict[str, Any]] = []
+def iter_realworld_eval(examples: List[Dict[str, Any]], model_name: str) -> Iterator[Dict[str, Any]]:
+    """Yield results one-by-one to enable chunked/streamed output writing."""
     client = create_model_client(model_name)
-    # valid_examples = _filter_valid_examples(examples)
     valid_examples = examples
     for ex in tqdm(valid_examples, total=len(valid_examples), desc="Exp4 generation"):
         title = ex["title_clean"]
@@ -95,22 +94,20 @@ def run_realworld_eval(examples: List[Dict[str, Any]], model_name: str) -> List[
         prompt = "\n".join(user_parts)
 
         try:
-            completion = client.generate(prompt) 
+            completion = client.generate(prompt)
         except Exception as e:
             completion = f"ERROR: {e}"
 
-        # Clean model output to a single, disclaimer-free paragraph
         completion = clean_prediction_text(completion)
 
-        results.append({
+        yield {
             "id": ex.get("q_id"),
             "model": model_name,
             "prediction": completion,
             "post_title": title,
             "post_text": selftext,
             "meta": {"note": "real-world eval"},
-        })
-    return results
+        }
 
 
 
@@ -137,6 +134,7 @@ def main() -> None:
     parser.add_argument("--model", type=str, default="gemini")
     parser.add_argument("--out", type=Path, required=False, help="Optional output path. If omitted or a directory, outputs go to results/exp4/<model>/exp4_askdocs_<data>_<model>[_vNNN].csv with a .config.json alongside.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--chunk-size", type=int, default=200, help="Number of rows per CSV part file for chunked writing (only for CSV outputs).")
     # Timestamped filenames are now default; no flag needed
     # Numeric versioning retained for backward compat via utility's force flag (not exposed here)
     # Always organize by experiment and model to keep results separated
@@ -163,26 +161,51 @@ def main() -> None:
 
     cfg = Exp4Config(data_path=args.data, model_name=args.model, output_path=output_path, seed=args.seed)
     examples = load_examples(cfg.data_path)
-    results = run_realworld_eval(examples, cfg.model_name)
-    meta = {"timestamp_utc": ts, "num_input": len(examples), "num_output": len(results)}
+    meta = {"timestamp_utc": ts, "num_input": len(examples)}
 
     cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
     out_suffix = cfg.output_path.suffix.lower()
     if out_suffix == ".json":
+        # For JSON, we still write a single file to preserve structure
+        results_list = list(iter_realworld_eval(examples, cfg.model_name))
+        meta["num_output"] = len(results_list)
         with cfg.output_path.open("w", encoding="utf-8") as f:
-            json.dump({"config": _serialize_config(cfg), "meta": meta, "results": results}, f, ensure_ascii=False, indent=2)
+            json.dump({"config": _serialize_config(cfg), "meta": meta, "results": results_list}, f, ensure_ascii=False, indent=2)
     elif out_suffix == ".csv":
-        flat_rows: List[Dict[str, Any]] = []
-        for r in results:
-            flat_rows.append({
+        # Chunked CSV writing: writes part files like <stem>.part0001.csv
+        part_files: List[str] = []
+        chunk_buffer: List[Dict[str, Any]] = []
+        part_index = 1
+        stem = cfg.output_path.with_suffix("")
+
+        def write_part(rows: List[Dict[str, Any]], idx: int) -> None:
+            part_path = stem.parent / f"{stem.name}.part{idx:04d}.csv"
+            df_part = pd.DataFrame(rows)
+            df_part.to_csv(part_path, index=False)
+            part_files.append(str(part_path))
+
+        num_output = 0
+        for r in iter_realworld_eval(examples, cfg.model_name):
+            flat_row = {
                 "id": r.get("id"),
                 "model": r.get("model"),
                 "prediction": r.get("prediction"),
                 "post_title": r.get("post_title", ""),
                 "post_text": r.get("post_text", ""),
                 "meta": json.dumps(r.get("meta", {}), ensure_ascii=False),
-            })
-        pd.DataFrame(flat_rows).to_csv(cfg.output_path, index=False)
+            }
+            chunk_buffer.append(flat_row)
+            num_output += 1
+            if len(chunk_buffer) >= args.chunk_size:
+                write_part(chunk_buffer, part_index)
+                chunk_buffer = []
+                part_index += 1
+
+        if chunk_buffer:
+            write_part(chunk_buffer, part_index)
+
+        meta["num_output"] = num_output
+        meta["part_files"] = part_files
         with cfg.output_path.with_suffix(".config.json").open("w", encoding="utf-8") as f:
             json.dump({"config": _serialize_config(cfg), "meta": meta}, f, ensure_ascii=False, indent=2)
     else:
