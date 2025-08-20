@@ -369,6 +369,7 @@ class RunConfig:
     model: str
     max_steps: int
     sleep: float
+    content_max_attempts: int
 
 
 def run_baseline(client: Any, cfg: RunConfig, question: str, options: Dict[str, str]) -> Tuple[str, List[Dict[str, str]], str]:
@@ -377,15 +378,27 @@ def run_baseline(client: Any, cfg: RunConfig, question: str, options: Dict[str, 
     print(system_prompt)
     print("==== BASELINE PROMPT (user) ====")
     print(user_prompt)
-    raw_text = call_model(client, system_prompt, user_prompt)
-    obj = try_parse_json_object(raw_text) or {}
-    steps = sanitize_steps(obj, cfg.max_steps)
+    # Retry content until valid (final_answer in A-E and non-empty steps)
+    raw_text = ""
+    obj: Dict[str, Any] = {}
+    steps: List[Dict[str, str]] = []
+    answer = ""
+    for attempt in range(1, int(cfg.content_max_attempts) + 1):
+        if attempt > 1:
+            print(f"[exp1] Baseline content invalid, retrying {attempt}/{cfg.content_max_attempts}...")
+        raw_text = call_model(client, system_prompt, user_prompt)
+        obj = try_parse_json_object(raw_text) or {}
+        steps = sanitize_steps(obj, cfg.max_steps)
+        answer = extract_answer_letter_from_obj_or_text(obj, raw_text) or ""
+        if answer in SUPPORTED_ANSWER_LETTERS and len(steps) > 0:
+            break
+        if cfg.sleep and cfg.sleep > 0:
+            time.sleep(min(cfg.sleep, 2.0))
     try:
         print("==== BASELINE STEPS (parsed) ====")
         print(json.dumps(steps, ensure_ascii=False, indent=2))
     except Exception:
         pass
-    answer = extract_answer_letter_from_obj_or_text(obj, raw_text) or ""
     return answer, steps, raw_text
 
 
@@ -400,10 +413,22 @@ def run_ablation_series(client: Any, cfg: RunConfig, base_question: str, options
         print(quote)
         print("==== ABLATED PROMPT (user) ====")
         print(user_prompt)
-        raw_text = call_model(client, system_prompt, user_prompt)
-        obj = try_parse_json_object(raw_text) or {}
-        ablated_answer = extract_answer_letter_from_obj_or_text(obj, raw_text) or ""
-        ablated_steps = sanitize_steps(obj, cfg.max_steps)
+        # Retry content until valid (final_answer in A-E and non-empty steps)
+        raw_text = ""
+        obj: Dict[str, Any] = {}
+        ablated_steps: List[Dict[str, str]] = []
+        ablated_answer = ""
+        for attempt in range(1, int(cfg.content_max_attempts) + 1):
+            if attempt > 1:
+                print(f"[exp1] Ablation {k} content invalid, retrying {attempt}/{cfg.content_max_attempts}...")
+            raw_text = call_model(client, system_prompt, user_prompt)
+            obj = try_parse_json_object(raw_text) or {}
+            ablated_steps = sanitize_steps(obj, cfg.max_steps)
+            ablated_answer = extract_answer_letter_from_obj_or_text(obj, raw_text) or ""
+            if ablated_answer in SUPPORTED_ANSWER_LETTERS and len(ablated_steps) > 0:
+                break
+            if cfg.sleep and cfg.sleep > 0:
+                time.sleep(min(cfg.sleep, 2.0))
         results.append({
             "k": k,
             "reason": reason,
@@ -426,6 +451,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--start", type=int, default=0, help="Start row offset")
     parser.add_argument("--limit", type=int, default=None, help="Max number of rows to process")
     parser.add_argument("--sleep", type=float, default=0.0, help="Seconds to sleep between requests")
+    parser.add_argument("--content-max-attempts", type=int, default=8, help="Max resend attempts when output format is invalid (non A-E or empty steps)")
 
     args = parser.parse_args(argv)
 
@@ -454,6 +480,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         model=args.model,
         max_steps=int(args["max_steps"]) if isinstance(args, dict) else int(args.max_steps),
         sleep=float(args.sleep),
+        content_max_attempts=int(args.content_max_attempts),
     )
 
     # Derive client from model string and set model env var accordingly
