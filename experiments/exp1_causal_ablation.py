@@ -56,110 +56,14 @@ def normalize_columns_case_insensitive(df: pd.DataFrame) -> pd.DataFrame:
     answer_idx_col = pick("answer_idx", "answer_index", "answerid", "answer_id", "label_idx")
     answer_text_col = pick("answer", "answer_text")
 
-    # Helper: parse options when structured as list of {key, value}
-    def _extract_structured_options(val: Any) -> Optional[Dict[str, str]]:
-        def _as_list(v: Any) -> Optional[List[Any]]:
-            if isinstance(v, list):
-                return v
-            if pd.isna(v):
-                return None
-            s = str(v).strip()
-            if not s:
-                return None
-            try:
-                j = json.loads(s)
-                if isinstance(j, list):
-                    return j
-            except Exception:
-                pass
-            try:
-                j = ast.literal_eval(s)
-                if isinstance(j, (list, tuple)):
-                    return list(j)
-            except Exception:
-                pass
-            return None
+    
 
-        lst = _as_list(val)
-        if lst is None:
-            return None
-        out: Dict[str, str] = {}
-        for item in lst:
-            if isinstance(item, dict):
-                k = str(item.get("key", "")).strip().upper()
-                v = "" if item.get("value") is None else str(item.get("value")).strip()
-                if k in {"A", "B", "C", "D", "E"}:
-                    out[k] = v
-        return out if out else None
-
-    # Helper: parse options field to list of plain texts (A..E order)
-    def _parse_options(val: Any) -> List[str]:
-        if isinstance(val, list):
-            # If list of dicts slipped through, stringify values; otherwise cast to str
-            result: List[str] = []
-            for x in val:
-                if isinstance(x, dict):
-                    result.append("" if x.get("value") is None else str(x.get("value")).strip())
-                else:
-                    result.append(str(x) if x is not None else "")
-            return result
-        if pd.isna(val):
-            return []
-        s = str(val).strip()
-        if not s:
-            return []
-        # Try JSON
-        try:
-            j = json.loads(s)
-            if isinstance(j, list):
-                return [str(x) if x is not None else "" for x in j]
-        except Exception:
-            pass
-        # Try literal_eval
-        try:
-            j = ast.literal_eval(s)
-            if isinstance(j, (list, tuple)):
-                return [str(x) if x is not None else "" for x in list(j)]
-        except Exception:
-            pass
-        # Fallback splits
-        for sep in ["||", "\n", "|", ";", "\t"]:
-            if sep in s:
-                parts = [p.strip() for p in s.split(sep)]
-                return parts
-        return [s]
+    
 
     def _norm_text(x: Any) -> str:
         return re.sub(r"\s+", " ", str(x).strip().lower()) if x is not None else ""
 
-    # Helper to coerce a possibly dict-ish option cell to plain text
-    def _coerce_option_cell(x: Any) -> str:
-        if isinstance(x, dict):
-            v = x.get("value")
-            return "" if v is None else str(v).strip()
-        s = "" if x is None else str(x).strip()
-        if not s:
-            return ""
-        # Try parse JSON or Python literal
-        try:
-            j = json.loads(s)
-            if isinstance(j, dict) and "value" in j:
-                v = j.get("value")
-                return "" if v is None else str(v).strip()
-        except Exception:
-            pass
-        try:
-            j = ast.literal_eval(s)
-            if isinstance(j, dict) and "value" in j:
-                v = j.get("value")
-                return "" if v is None else str(v).strip()
-        except Exception:
-            pass
-        # As a last resort, regex `'value': '...'` or "value": "..."
-        m = re.search(r"['\"]value['\"]\s*:\s*['\"]([^'\"]*)['\"]", s)
-        if m:
-            return m.group(1).strip()
-        return s
+    
 
     # Case 1: canonical columns present → simple rename and return (with coercion)
     has_canonical_choices = a_col and b_col and c_col and d_col
@@ -180,10 +84,10 @@ def normalize_columns_case_insensitive(df: pd.DataFrame) -> pd.DataFrame:
             df["id"] = range(1, len(df) + 1)
         if "E" not in df.columns:
             df["E"] = ""
-        # Coerce any dict-like option values to plain text
+        # Coerce values to plain strings minimally
         for col in ["A", "B", "C", "D", "E"]:
             if col in df.columns:
-                df[col] = df[col].apply(_coerce_option_cell)
+                df[col] = df[col].apply(lambda x: "" if pd.isna(x) else str(x).strip())
         # If original had answer_idx, prefer it as label as requested
         if answer_idx_col is not None and answer_idx_col in df_in.columns:
             df["label"] = df_in[answer_idx_col]
@@ -197,70 +101,91 @@ def normalize_columns_case_insensitive(df: pd.DataFrame) -> pd.DataFrame:
 
     q_series = df[lower_to_orig[q_col]] if q_col in lower_to_orig else df[q_col]
     opts_series = df[options_col]
-    a_list: List[str] = []
-    b_list: List[str] = []
-    c_list: List[str] = []
-    d_list: List[str] = []
-    e_list: List[str] = []
-    labels: List[Optional[str]] = []
 
-    # Prepare answer cols if exist
+    def to_list_of_dicts(x: Any) -> List[Dict[str, Any]]:
+        if isinstance(x, list):
+            return x
+        if pd.isna(x):
+            return []
+        s = str(x).strip()
+        if not s:
+            return []
+        # Tolerate newline-separated dicts and adjacent dicts without commas
+        s2 = s.replace("\n", ",")
+        s2 = re.sub(r"}\s*{", "}, {", s2)
+        try:
+            val = ast.literal_eval(s2)
+            if isinstance(val, (list, tuple)):
+                return list(val)
+        except Exception:
+            pass
+        # Fallback: extract each { ... } chunk and parse individually
+        chunks = re.findall(r"\{[^}]*\}", s)
+        out: List[Dict[str, Any]] = []
+        for c in chunks:
+            try:
+                d = ast.literal_eval(c)
+                if isinstance(d, dict):
+                    out.append(d)
+            except Exception:
+                pass
+        return out
+
+    def to_options_map(x: Any) -> Dict[str, str]:
+        out: Dict[str, str] = {}
+        for d in to_list_of_dicts(x):
+            if isinstance(d, dict):
+                k = str(d.get("key", "")).strip().upper()
+                v = "" if d.get("value") is None else str(d.get("value")).strip()
+                if k in SUPPORTED_ANSWER_LETTERS:
+                    out[k] = v
+        return out
+
+    wide = opts_series.apply(to_options_map).apply(pd.Series)
+    for letter in ["A", "B", "C", "D", "E"]:
+        if letter not in wide.columns:
+            wide[letter] = ""
+    wide = wide[["A", "B", "C", "D", "E"]].fillna("")
+
+    # Determine labels
     ans_idx_series = df[answer_idx_col] if answer_idx_col else None
     ans_text_series = df[answer_text_col] if answer_text_col else None
 
-    for i in range(len(df)):
-        raw_opts = opts_series.iloc[i]
-        mapping = _extract_structured_options(raw_opts)
-        if mapping is not None:
-            A = mapping.get("A", "")
-            B = mapping.get("B", "")
-            C = mapping.get("C", "")
-            D = mapping.get("D", "")
-            E = mapping.get("E", "")
-        else:
-            opt_values = _parse_options(raw_opts)
-            # Pad/truncate to 5
-            while len(opt_values) < 5:
-                opt_values.append("")
-            if len(opt_values) > 5:
-                opt_values = opt_values[:5]
-            A, B, C, D, E = [str(x).strip() for x in opt_values]
-        a_list.append(A)
-        b_list.append(B)
-        c_list.append(C)
-        d_list.append(D)
-        e_list.append(E)
+    def _norm_text(x: Any) -> str:
+        return re.sub(r"\s+", " ", str(x).strip().lower()) if x is not None else ""
 
-        # Determine label
-        label_value: Any = None
-        if ans_idx_series is not None:
-            # Preserve original answer_idx exactly as label
-            label_value = ans_idx_series.iloc[i]
-        elif ans_text_series is not None:
-            # Fallback if no answer_idx: try to infer from answer text
-            ans_raw = ans_text_series.iloc[i]
-            # Prefer a letter A-E
-            inferred = standardize_gold_label(ans_raw)
-            if inferred is not None:
-                label_value = inferred
-            else:
-                # Try matching normalized text to options
-                norm_ans = _norm_text(ans_raw)
-                options_map = {"A": _norm_text(A), "B": _norm_text(B), "C": _norm_text(C), "D": _norm_text(D), "E": _norm_text(E)}
-                for letter, opt_text in options_map.items():
-                    if opt_text and opt_text == norm_ans:
-                        label_value = letter
-                        break
-        labels.append(label_value)
+    if ans_idx_series is not None:
+        labels_series = ans_idx_series.apply(standardize_gold_label)
+    elif ans_text_series is not None:
+        def infer(row_idx: int) -> Optional[str]:
+            raw = ans_text_series.iloc[row_idx]
+            letter = standardize_gold_label(raw)
+            if letter in SUPPORTED_ANSWER_LETTERS:
+                return letter
+            norm_ans = _norm_text(raw)
+            opts_map = {
+                "A": _norm_text(wide.iloc[row_idx]["A"]),
+                "B": _norm_text(wide.iloc[row_idx]["B"]),
+                "C": _norm_text(wide.iloc[row_idx]["C"]),
+                "D": _norm_text(wide.iloc[row_idx]["D"]),
+                "E": _norm_text(wide.iloc[row_idx]["E"]),
+            }
+            for k, v in opts_map.items():
+                if v and v == norm_ans:
+                    return k
+            return None
+        labels_series = pd.Series([infer(i) for i in range(len(df))])
+    else:
+        labels_series = pd.Series([None] * len(df))
 
     out = pd.DataFrame({
         "question": q_series,
-        "A": [ _coerce_option_cell(x) for x in a_list ],
-        "B": [ _coerce_option_cell(x) for x in b_list ],
-        "C": [ _coerce_option_cell(x) for x in c_list ],
-        "D": [ _coerce_option_cell(x) for x in d_list ],
-        "E": [ _coerce_option_cell(x) for x in e_list ],
-        "label": labels,
+        "A": wide["A"],
+        "B": wide["B"],
+        "C": wide["C"],
+        "D": wide["D"],
+        "E": wide["E"],
+        "label": labels_series,
     })
     out.insert(0, "id", range(1, len(out) + 1))
     return out[["id", "question", "A", "B", "C", "D", "E", "label"]]
@@ -269,7 +194,7 @@ def normalize_columns_case_insensitive(df: pd.DataFrame) -> pd.DataFrame:
 def standardize_gold_label(value: Any) -> Optional[str]:
     """Return a single uppercase letter A-E if possible, otherwise None.
 
-    Accepts letters, strings that contain A-D, or integer-like values (1-4).
+    Accepts letters, strings that contain A-E, or integer-like values (1-5).
     """
     if value is None:
         return None
@@ -296,44 +221,7 @@ def standardize_gold_label(value: Any) -> Optional[str]:
     return None
 
 
-def parse_structured_options_to_map(val: Any) -> Optional[Dict[str, str]]:
-    """Best-effort parse of a value that may encode the full options list as a list of {key, value}.
-
-    Returns a dict mapping letters A-E to text, or None if not parseable.
-    """
-    def _as_list(v: Any) -> Optional[List[Any]]:
-        if isinstance(v, list):
-            return v
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return None
-        s = str(v).strip()
-        if not s:
-            return None
-        try:
-            j = json.loads(s)
-            if isinstance(j, list):
-                return j
-        except Exception:
-            pass
-        try:
-            j = ast.literal_eval(s)
-            if isinstance(j, (list, tuple)):
-                return list(j)
-        except Exception:
-            pass
-        return None
-
-    lst = _as_list(val)
-    if lst is None:
-        return None
-    out: Dict[str, str] = {}
-    for item in lst:
-        if isinstance(item, dict):
-            k = str(item.get("key", "")).strip().upper()
-            v = "" if item.get("value") is None else str(item.get("value")).strip()
-            if k in {"A", "B", "C", "D", "E"}:
-                out[k] = v
-    return out if out else None
+   
 
 
 def build_prompts(question_text: str, options: Dict[str, str], max_steps: int) -> Tuple[str, str]:
@@ -351,19 +239,9 @@ def build_prompts(question_text: str, options: Dict[str, str], max_steps: int) -
         "- Do not include any text before or after the JSON object."
     )
 
-    # Ensure option texts are plain strings; if an entire structured list leaks in, extract per-letter
+    # Option texts are already normalized to plain strings during CSV normalization
     def _coerce(letter: str) -> str:
-        raw = options.get(letter, "")
-        text = str(raw).strip()
-        if "key" in text and (text.startswith("[") or text.startswith("{")):
-            mapping = parse_structured_options_to_map(text)
-            if mapping is not None:
-                return mapping.get(letter, "")
-        # Try regex for `'value': '...'` or "value": "..."
-        m = re.search(r"['\"]value['\"]\s*:\s*['\"]([^'\"]*)['\"]", text)
-        if m:
-            return m.group(1)
-        return text
+        return str(options.get(letter, "")).strip()
 
     user_prompt = (
         "Question:\n" + question_text.strip() + "\n\n"
