@@ -24,6 +24,7 @@ import os
 import re
 from typing import Dict, List, Tuple, Any, Optional
 import json
+import math
 
 
 # Prefer absolute import when run as a module; fall back when executed as a script
@@ -84,6 +85,47 @@ def detect_ablation_steps_columns(fieldnames: List[str]) -> List[Tuple[int, str]
             found.append((int(m.group(1)), name))
     found.sort(key=lambda x: x[0])
     return found
+
+
+def _wilson_ci(k: float, n: float, z: float = 1.96) -> Tuple[float, float]:
+    """Wilson score interval for a binomial proportion.
+
+    Args:
+        k: number of successes
+        n: number of trials
+        z: z-score for desired confidence (1.96 ~ 95%)
+    Returns:
+        (low, high) bounds in [0,1]. If n==0, returns (0.0, 0.0).
+    """
+    if n <= 0:
+        return 0.0, 0.0
+    p = k / n
+    denom = 1.0 + (z * z) / n
+    center = (p + (z * z) / (2.0 * n)) / denom
+    margin = (z * math.sqrt((p * (1.0 - p) + (z * z) / (4.0 * n)) / n)) / denom
+    low = max(0.0, center - margin)
+    high = min(1.0, center + margin)
+    return low, high
+
+
+def _mean_se_ci(values: List[float], z: float = 1.96) -> Tuple[float, float, float]:
+    """Return (se, ci_low, ci_high) for the mean of values using normal approx.
+
+    If fewer than 2 values, se is 0 and CI collapses to the mean.
+    """
+    if not values:
+        return 0.0, 0.0, 0.0
+    n = float(len(values))
+    mean_val = sum(values) / n
+    if len(values) < 2:
+        return 0.0, mean_val, mean_val
+    # sample standard deviation
+    var = sum((v - mean_val) ** 2 for v in values) / (len(values) - 1)
+    sd = math.sqrt(var)
+    se = sd / math.sqrt(n)
+    ci_low = mean_val - z * se
+    ci_high = mean_val + z * se
+    return se, ci_low, ci_high
 
 
 def load_columns(csv_path: str) -> Tuple[List[str], List[str], Dict[int, List[str]], Dict[int, List[str]], List[str], List[str]]:
@@ -293,7 +335,18 @@ def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
 
     # Write tidy CSV of metrics
     rows: List[Dict[str, Any]] = []
-    def add_row(scope: str, metric: str, value: float, ablation_index: Optional[int] = None, numerator: Optional[float] = None, denominator: Optional[float] = None) -> None:
+    def add_row(
+        scope: str,
+        metric: str,
+        value: float,
+        *,
+        ablation_index: Optional[int] = None,
+        numerator: Optional[float] = None,
+        denominator: Optional[float] = None,
+        se: Optional[float] = None,
+        ci_low: Optional[float] = None,
+        ci_high: Optional[float] = None,
+    ) -> None:
         rows.append({
             "scope": scope,
             "metric": metric,
@@ -302,11 +355,20 @@ def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
             "numerator": 0 if numerator is None else numerator,
             "denominator": 0 if denominator is None else denominator,
             "rows": num_rows,
+            "se": 0.0 if se is None else se,
+            "ci_low": 0.0 if ci_low is None else ci_low,
+            "ci_high": 0.0 if ci_high is None else ci_high,
         })
 
     # Baseline accuracy with numerator/denominator
     baseline_correct = sum(1 for g, p in zip(golds, baseline) if g == p)
-    add_row("baseline", "accuracy", baseline_accuracy_value, numerator=float(baseline_correct), denominator=float(num_rows))
+    # Baseline accuracy CI (Wilson) and SE (binomial approx)
+    base_n = float(num_rows)
+    base_k = float(baseline_correct)
+    base_ci_low, base_ci_high = _wilson_ci(base_k, base_n)
+    base_p = baseline_accuracy_value
+    base_se = math.sqrt(base_p * (1.0 - base_p) / base_n) if base_n > 0 else 0.0
+    add_row("baseline", "accuracy", baseline_accuracy_value, numerator=base_k, denominator=base_n, se=base_se, ci_low=base_ci_low, ci_high=base_ci_high)
 
     # Ablation metrics with counts
     for idx, abl_acc, flip_rate in ablation_metrics:
@@ -317,20 +379,52 @@ def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
         abl_correct = sum(1 for g, p in zip(golds_filtered, preds_int) if g == p)
         flips_count = sum(1 for b, a in zip(baseline_filtered, preds_int) if b != a)
         denom = float(len(golds_filtered)) if golds_filtered else 0.0
-        add_row("ablation", "accuracy", abl_acc, ablation_index=idx, numerator=float(abl_correct), denominator=denom)
-        add_row("ablation", "netflip_vs_baseline", flip_rate, ablation_index=idx, numerator=float(flips_count), denominator=denom)
+        # Per-ablation accuracy CI/SE
+        acc_ci_low, acc_ci_high = _wilson_ci(float(abl_correct), denom)
+        acc_se = math.sqrt(abl_acc * (1.0 - abl_acc) / denom) if denom > 0 else 0.0
+        add_row("ablation", "accuracy", abl_acc, ablation_index=idx, numerator=float(abl_correct), denominator=denom, se=acc_se, ci_low=acc_ci_low, ci_high=acc_ci_high)
+        # Per-ablation netflip CI/SE
+        nf_ci_low, nf_ci_high = _wilson_ci(float(flips_count), denom)
+        nf_se = math.sqrt(flip_rate * (1.0 - flip_rate) / denom) if denom > 0 else 0.0
+        add_row("ablation", "netflip_vs_baseline", flip_rate, ablation_index=idx, numerator=float(flips_count), denominator=denom, se=nf_se, ci_low=nf_ci_low, ci_high=nf_ci_high)
 
     # Global metrics
     # Causal density (per-example mean)
-    add_row("global", "causal_density_mean", mean_example_density)
-    add_row("global", "macro_ablation_accuracy", mean_ablation_accuracy)
-    add_row("global", "macro_ablation_netflip_vs_baseline", mean_ablation_netflip)
-    add_row("global", "macro_ablation_damage_rate", macro_damage_rate)
-    add_row("global", "macro_ablation_rescue_rate", macro_rescue_rate)
-    add_row("global", "delta_accuracy", delta_accuracy_value)
-    add_row("global", "damage_rate", damage_rate_value)
-    add_row("global", "rescue_rate", rescue_rate_value)
-    add_row("global", "netflip_damage_minus_rescue", netflip_damage_minus_rescue_value)
+    # Global: causal density mean
+    cd_se, cd_ci_low, cd_ci_high = _mean_se_ci(per_example_densities)
+    add_row("global", "causal_density_mean", mean_example_density, se=cd_se, ci_low=cd_ci_low, ci_high=cd_ci_high)
+
+    # Global: macro ablation metrics (means across ablations)
+    acc_values = [acc for _, acc, _ in ablation_metrics]
+    nf_values = [nf for _, _, nf in ablation_metrics]
+    acc_se, acc_ci_low, acc_ci_high = _mean_se_ci(acc_values)
+    nf_se, nf_ci_low, nf_ci_high = _mean_se_ci(nf_values)
+    add_row("global", "macro_ablation_accuracy", mean_ablation_accuracy, se=acc_se, ci_low=acc_ci_low, ci_high=acc_ci_high)
+    add_row("global", "macro_ablation_netflip_vs_baseline", mean_ablation_netflip, se=nf_se, ci_low=nf_ci_low, ci_high=nf_ci_high)
+
+    # Global: macro damage/rescue across ablations
+    mdam_se, mdam_ci_low, mdam_ci_high = _mean_se_ci(ablation_damage_rates)
+    mres_se, mres_ci_low, mres_ci_high = _mean_se_ci(ablation_rescue_rates)
+    add_row("global", "macro_ablation_damage_rate", macro_damage_rate, se=mdam_se, ci_low=mdam_ci_low, ci_high=mdam_ci_high)
+    add_row("global", "macro_ablation_rescue_rate", macro_rescue_rate, se=mres_se, ci_low=mres_ci_low, ci_high=mres_ci_high)
+
+    # Global: damage/rescue (means across rows)
+    dam_se, dam_ci_low, dam_ci_high = _mean_se_ci(damage_rates)
+    res_se, res_ci_low, res_ci_high = _mean_se_ci(rescue_rates)
+    add_row("global", "damage_rate", damage_rate_value, se=dam_se, ci_low=dam_ci_low, ci_high=dam_ci_high)
+    add_row("global", "rescue_rate", rescue_rate_value, se=res_se, ci_low=res_ci_low, ci_high=res_ci_high)
+
+    # Delta accuracy (difference of means): combine SEs in quadrature
+    delta_se = math.sqrt(base_se ** 2 + acc_se ** 2)
+    delta_ci_low = delta_accuracy_value - 1.96 * delta_se
+    delta_ci_high = delta_accuracy_value + 1.96 * delta_se
+    add_row("global", "delta_accuracy", delta_accuracy_value, se=delta_se, ci_low=delta_ci_low, ci_high=delta_ci_high)
+
+    # Netflip (damage - rescue)
+    ndr_se = math.sqrt(dam_se ** 2 + res_se ** 2)
+    ndr_ci_low = netflip_damage_minus_rescue_value - 1.96 * ndr_se
+    ndr_ci_high = netflip_damage_minus_rescue_value + 1.96 * ndr_se
+    add_row("global", "netflip_damage_minus_rescue", netflip_damage_minus_rescue_value, se=ndr_se, ci_low=ndr_ci_low, ci_high=ndr_ci_high)
 
     # Resolve output path
     if out_path is None or not str(out_path).strip():
@@ -338,7 +432,7 @@ def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
         out_path = base + ".metrics.csv"
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    fieldnames = ["scope", "metric", "ablation_index", "value", "numerator", "denominator", "rows"]
+    fieldnames = ["scope", "metric", "ablation_index", "value", "numerator", "denominator", "rows", "se", "ci_low", "ci_high"]
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
