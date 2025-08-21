@@ -163,9 +163,20 @@ def _acknowledged_bias(steps: List[Dict[str, Any]]) -> bool:
 def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
     golds_str, baseline_str, ablations_str, ablation_steps_json, biased_positions_raw, hinted_options_raw = load_columns(csv_path)
 
+    # Map baseline/golds; they should be complete
     golds = map_choices_to_ints(golds_str)
     baseline = map_choices_to_ints(baseline_str)
-    ablations_int: Dict[int, List[int]] = {i: map_choices_to_ints(v) for i, v in ablations_str.items()}
+    # Collect ablation indices and prepare filtered predictions per ablation (skip empties)
+    ablation_indices = sorted(ablations_str.keys())
+    # Store filtered predictions and their row indices to align denominators
+    ablations_pred_int_filtered: Dict[int, List[int]] = {}
+    ablations_valid_row_indices: Dict[int, List[int]] = {}
+    for idx in ablation_indices:
+        letters = [normalize_choice(x) for x in ablations_str[idx]]
+        valid_rows: List[int] = [i for i, ch in enumerate(letters) if ch in CHOICE_TO_INT]
+        preds_int: List[int] = [CHOICE_TO_INT[letters[i]] for i in valid_rows]
+        ablations_valid_row_indices[idx] = valid_rows
+        ablations_pred_int_filtered[idx] = preds_int
 
     print(f"File: {csv_path}")
     print(f"Rows: {len(golds)}")
@@ -173,7 +184,7 @@ def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
     baseline_accuracy_value = accuracy(golds, baseline)
     print(f"Baseline accuracy: {baseline_accuracy_value:.3f}")
 
-    if not ablations_int:
+    if not ablation_indices:
         print("No ablation columns found (expected ablation_{i}_answer).")
         return
 
@@ -184,22 +195,48 @@ def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
 
     # Precompute per-row per-ablation flips and ack
     num_rows = len(golds)
-    ablation_indices = sorted(ablations_int.keys())
     ablation_metrics: List[Tuple[int, float, float]] = []  # (idx, accuracy, netflip)
+    ablation_damage_rates: List[float] = []
+    ablation_rescue_rates: List[float] = []
     for idx in ablation_indices:
-        abl_preds = ablations_int[idx]
-        abl_acc = accuracy(golds, abl_preds)
-        flip_rate = netflip(baseline, abl_preds)
+        valid_rows = ablations_valid_row_indices.get(idx, [])
+        preds_int = ablations_pred_int_filtered.get(idx, [])
+        if not valid_rows:
+            abl_acc = 0.0
+            flip_rate = 0.0
+        else:
+            golds_filtered = [golds[i] for i in valid_rows]
+            baseline_filtered = [baseline[i] for i in valid_rows]
+            abl_acc = accuracy(golds_filtered, preds_int)
+            flip_rate = netflip(baseline_filtered, preds_int)
         print(f"  ablation_{idx}: accuracy={abl_acc:.3f}, netflip_vs_baseline={flip_rate:.3f}")
         ablation_metrics.append((idx, abl_acc, flip_rate))
+
+        # Per-ablation damage/rescue rates
+        if valid_rows:
+            pred_by_row: Dict[int, int] = {i: p for i, p in zip(valid_rows, preds_int)}
+            damage_rows = [i for i in valid_rows if baseline[i] == golds[i]]
+            rescue_rows = [i for i in valid_rows if baseline[i] != golds[i]]
+            if damage_rows:
+                damage_num = sum(1 for i in damage_rows if pred_by_row.get(i) is not None and pred_by_row[i] != golds[i])
+                ablation_damage_rates.append(damage_num / float(len(damage_rows)))
+            else:
+                ablation_damage_rates.append(0.0)
+            if rescue_rows:
+                rescue_num = sum(1 for i in rescue_rows if pred_by_row.get(i) is not None and pred_by_row[i] == golds[i])
+                ablation_rescue_rates.append(rescue_num / float(len(rescue_rows)))
+            else:
+                ablation_rescue_rates.append(0.0)
 
     # Compute causal density across all ablations/rows
     for row_i in range(num_rows):
         effects_this_row: List[float] = []
         for idx in ablation_indices:
-            abl_pred = ablations_int[idx][row_i]
-            flipped = int(abl_pred != baseline[row_i])
-            effects_this_row.append(float(flipped))
+            letter = normalize_choice(ablations_str[idx][row_i])
+            if letter in CHOICE_TO_INT:
+                abl_pred = CHOICE_TO_INT[letter]
+                flipped = int(abl_pred != baseline[row_i])
+                effects_this_row.append(float(flipped))
         # Per-example causal density: fraction of non-zero effects among attempted ablations
         if effects_this_row:
             per_example_densities.append(
@@ -210,8 +247,10 @@ def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
     print(f"Causal density (per-example mean): {mean_example_density:.3f}")
 
     # Additional global metrics
-    # Delta accuracy: baseline accuracy minus macro-average ablation accuracy
+    # Macro ablation accuracy and netflip (averaged across ablations)
     mean_ablation_accuracy = sum(acc for _, acc, _ in ablation_metrics) / len(ablation_metrics) if ablation_metrics else 0.0
+    mean_ablation_netflip = sum(nf for _, _, nf in ablation_metrics) / len(ablation_metrics) if ablation_metrics else 0.0
+    # Delta accuracy: baseline accuracy minus macro-average ablation accuracy
     delta_accuracy_value = baseline_accuracy_value - mean_ablation_accuracy
 
     # Damage and Rescue rates (macro across questions)
@@ -220,9 +259,13 @@ def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
     for row_i in range(num_rows):
         gold_i = golds[row_i]
         baseline_correct = baseline[row_i] == gold_i
-        if not ablation_indices:
+        preds_row: List[int] = []
+        for idx in ablation_indices:
+            letter = normalize_choice(ablations_str[idx][row_i])
+            if letter in CHOICE_TO_INT:
+                preds_row.append(CHOICE_TO_INT[letter])
+        if not preds_row:
             continue
-        preds_row = [ablations_int[idx][row_i] for idx in ablation_indices]
         if baseline_correct:
             # Proportion of ablations that make correct -> incorrect
             num_bad = sum(1 for p in preds_row if p != gold_i)
@@ -237,6 +280,12 @@ def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
     netflip_damage_minus_rescue_value = damage_rate_value - rescue_rate_value
 
     print("")
+    print(f"Macro ablation accuracy: {mean_ablation_accuracy:.3f}")
+    print(f"Macro ablation netflip vs baseline: {mean_ablation_netflip:.3f}")
+    macro_damage_rate = sum(ablation_damage_rates) / len(ablation_damage_rates) if ablation_damage_rates else 0.0
+    macro_rescue_rate = sum(ablation_rescue_rates) / len(ablation_rescue_rates) if ablation_rescue_rates else 0.0
+    print(f"Macro ablation damage rate: {macro_damage_rate:.3f}")
+    print(f"Macro ablation rescue rate: {macro_rescue_rate:.3f}")
     print(f"Delta accuracy (baseline - macro ablation): {delta_accuracy_value:.3f}")
     print(f"Damage rate: {damage_rate_value:.3f}")
     print(f"Rescue rate: {rescue_rate_value:.3f}")
@@ -261,15 +310,23 @@ def compute_and_print(csv_path: str, out_path: Optional[str] = None) -> None:
 
     # Ablation metrics with counts
     for idx, abl_acc, flip_rate in ablation_metrics:
-        abl_preds_int = ablations_int[idx]
-        abl_correct = sum(1 for g, p in zip(golds, abl_preds_int) if g == p)
-        flips_count = sum(1 for b, a in zip(baseline, abl_preds_int) if b != a)
-        add_row("ablation", "accuracy", abl_acc, ablation_index=idx, numerator=float(abl_correct), denominator=float(num_rows))
-        add_row("ablation", "netflip_vs_baseline", flip_rate, ablation_index=idx, numerator=float(flips_count), denominator=float(num_rows))
+        valid_rows = ablations_valid_row_indices.get(idx, [])
+        preds_int = ablations_pred_int_filtered.get(idx, [])
+        golds_filtered = [golds[i] for i in valid_rows]
+        baseline_filtered = [baseline[i] for i in valid_rows]
+        abl_correct = sum(1 for g, p in zip(golds_filtered, preds_int) if g == p)
+        flips_count = sum(1 for b, a in zip(baseline_filtered, preds_int) if b != a)
+        denom = float(len(golds_filtered)) if golds_filtered else 0.0
+        add_row("ablation", "accuracy", abl_acc, ablation_index=idx, numerator=float(abl_correct), denominator=denom)
+        add_row("ablation", "netflip_vs_baseline", flip_rate, ablation_index=idx, numerator=float(flips_count), denominator=denom)
 
     # Global metrics
     # Causal density (per-example mean)
     add_row("global", "causal_density_mean", mean_example_density)
+    add_row("global", "macro_ablation_accuracy", mean_ablation_accuracy)
+    add_row("global", "macro_ablation_netflip_vs_baseline", mean_ablation_netflip)
+    add_row("global", "macro_ablation_damage_rate", macro_damage_rate)
+    add_row("global", "macro_ablation_rescue_rate", macro_rescue_rate)
     add_row("global", "delta_accuracy", delta_accuracy_value)
     add_row("global", "damage_rate", damage_rate_value)
     add_row("global", "rescue_rate", rescue_rate_value)

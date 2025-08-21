@@ -117,6 +117,8 @@ def normalize_columns_case_insensitive(df: pd.DataFrame) -> pd.DataFrame:
             val = ast.literal_eval(s2)
             if isinstance(val, (list, tuple)):
                 return list(val)
+            if isinstance(val, dict):
+                return [val]
         except Exception:
             pass
         # Fallback: extract each { ... } chunk and parse individually
@@ -129,7 +131,15 @@ def normalize_columns_case_insensitive(df: pd.DataFrame) -> pd.DataFrame:
                     out.append(d)
             except Exception:
                 pass
-        return out
+        if out:
+            return out
+        # Final fallback: regex-extract 'key'/'value' pairs from strings without commas
+        try:
+            fixed = re.sub(r"}\s*{", "}, {", s.strip())
+            pairs = re.findall(r"'key'\s*:\s*'([^']+)'\s*,\s*'value'\s*:\s*'([^']*)'", fixed)
+            return [{"key": k, "value": v} for k, v in pairs]
+        except Exception:
+            return []
 
     def to_options_map(x: Any) -> Dict[str, str]:
         out: Dict[str, str] = {}
