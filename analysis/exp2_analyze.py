@@ -40,7 +40,6 @@ from analysis.metrics import (
     add_wilson_ci,
     bar_with_ci,
     grouped_bars_with_ci,
-    table_to_png,
 )
 
 
@@ -70,7 +69,9 @@ def _has_cols(df: pd.DataFrame, cols: List[str]) -> bool:
 
 
 def _prefer_preaggregated(df: pd.DataFrame, metric: str) -> Optional[pd.DataFrame]:
-    mask = (df.get("scope") == "global") & (df.get("metric") == metric)
+    if not {"scope", "metric"}.issubset(df.columns):
+        return None
+    mask = (df["scope"] == "global") & (df["metric"] == metric)
     if mask.any():
         cols = ["model", "value", "ci_low", "ci_high", "se"]
         found = df.loc[mask, [c for c in cols if c in df.columns]].copy()
@@ -87,9 +88,12 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
     raw = pd.read_csv(input_csv)
 
     # Split pre-aggregated vs per-item rows
-    is_agg = (raw.get("scope") == "global") & raw.get("metric").notna()
-    agg_rows = raw[is_agg.fillna(False)].copy() if "scope" in raw.columns else pd.DataFrame()
-    item_rows = raw[~is_agg.fillna(False)].copy() if "scope" in raw.columns else raw.copy()
+    if {"scope", "metric"}.issubset(raw.columns):
+        is_agg = (raw["scope"] == "global") & raw["metric"].notna()
+    else:
+        is_agg = pd.Series([False] * len(raw), index=raw.index)
+    agg_rows = raw[is_agg].copy()
+    item_rows = raw[~is_agg].copy()
 
     if not _has_cols(item_rows, MANDATORY_COLS) and agg_rows.empty:
         raise ValueError("Input CSV missing per-item mandatory columns and no pre-aggregated metrics present.")
@@ -111,17 +115,20 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
         acc = add_wilson_ci(acc)
 
     # Extract per-condition accuracy tables
-    acc_unb = acc[acc["condition"] == "unbiased"].rename(columns={"value": "Acc_unbiased"}) if acc is not None else None
-    acc_bg = acc[acc["condition"] == "biased_to_gold"].rename(columns={"value": "Acc_bias_gold"}) if acc is not None else None
-    acc_bw = acc[acc["condition"] == "biased_to_wrong"].rename(columns={"value": "Acc_bias_wrong"}) if acc is not None else None
+    acc_unb_raw = acc[acc["condition"] == "unbiased"].copy() if acc is not None else None
+    acc_bg_raw = acc[acc["condition"] == "biased_to_gold"].copy() if acc is not None else None
+    acc_bw_raw = acc[acc["condition"] == "biased_to_wrong"].copy() if acc is not None else None
+    acc_unb = acc_unb_raw.rename(columns={"value": "Acc_unbiased"}) if acc_unb_raw is not None else None
+    acc_bg = acc_bg_raw.rename(columns={"value": "Acc_bias_gold"}) if acc_bg_raw is not None else None
+    acc_bw = acc_bw_raw.rename(columns={"value": "Acc_bias_wrong"}) if acc_bw_raw is not None else None
 
     # Deltas
-    acc_dg = compute_delta(acc_unb[["model", "value"]].rename(columns={"value": "value"}) if acc_unb is not None else pd.DataFrame(),
-                           acc_bg[["model", "value"]].rename(columns={"value": "value"}) if acc_bg is not None else pd.DataFrame(),
-                           on=["model"], name="Delta_gold") if acc_unb is not None and acc_bg is not None else None
-    acc_dw = compute_delta(acc_unb[["model", "value"]].rename(columns={"value": "value"}) if acc_unb is not None else pd.DataFrame(),
-                           acc_bw[["model", "value"]].rename(columns={"value": "value"}) if acc_bw is not None else pd.DataFrame(),
-                           on=["model"], name="Delta_wrong") if acc_unb is not None and acc_bw is not None else None
+    acc_dg = None
+    acc_dw = None
+    if acc_unb_raw is not None and not acc_unb_raw.empty and acc_bg_raw is not None and not acc_bg_raw.empty:
+        acc_dg = compute_delta(acc_unb_raw[["model", "value"]], acc_bg_raw[["model", "value"]], on=["model"], name="Delta_gold")
+    if acc_unb_raw is not None and not acc_unb_raw.empty and acc_bw_raw is not None and not acc_bw_raw.empty:
+        acc_dw = compute_delta(acc_unb_raw[["model", "value"]], acc_bw_raw[["model", "value"]], on=["model"], name="Delta_wrong")
 
     # Damage/Rescue/Netflip using unbiased as base vs each biased condition
     def _drn_for_condition(cond: str, label: str) -> Optional[pd.DataFrame]:
@@ -138,6 +145,8 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
         base = sub[sub["condition"] == "unbiased"][join_keys + ["pred", "gold"]].rename(columns={"pred": "pred_unbiased"})
         pert = sub[sub["condition"] == cond][join_keys + ["pred", "gold"]].rename(columns={"pred": "pred_pert"})
         joined = base.merge(pert, on=join_keys + ["gold"], how="inner")
+        if joined.empty:
+            return None
         drn = compute_damage_rescue_netflip(joined, ["model"], base_col="pred_unbiased", pert_col="pred_pert", gold_col="gold")
         return drn
 
@@ -209,10 +218,9 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
 
     summary_df = pd.DataFrame(summary_rows)
 
-    # Save JSON dump of metrics
-    json_path = os.path.join(outdir, "exp2_metrics.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(summary_rows, f, indent=2)
+    # Save metrics as CSV instead of JSON
+    metrics_csv_path = os.path.join(outdir, "exp2_metrics.csv")
+    pd.DataFrame(summary_rows).to_csv(metrics_csv_path, index=False)
 
     # Build figures
     # Figure 1: Accuracies grouped bars
@@ -297,7 +305,7 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
         # SE of difference
         import math as _math
 
-        se = [float(_math.sqrt(dl * 0 + rl * 0 + row["d_se"] ** 2 + row["r_se"] ** 2)) for _, row in joined.iterrows()]
+        se = [float(_math.sqrt(row["d_se"] ** 2 + row["r_se"] ** 2)) for _, row in joined.iterrows()]
         # 95% CI approx
         ci_lows = [m - 1.96 * s for m, s in zip(means, se)]
         ci_highs = [m + 1.96 * s for m, s in zip(means, se)]
@@ -346,7 +354,7 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
                 title="Experiment 2: Reveal on flip with 95% CI",
             )
 
-    # Summary table with CI text
+    # Summary table with CI text (also written as CSV)
     def _fmt_ci(lo: Optional[float], hi: Optional[float]) -> str:
         if pd.isna(lo) or pd.isna(hi):
             return ""
@@ -365,18 +373,18 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
         ci_map = {r["model"]: (r.get("ci_low"), r.get("ci_high")) for _, r in acc_bw.iterrows()}
         table["Acc_bias_wrong"] = table.apply(lambda r: f"{r['Acc_bias_wrong']:.3f}" + _fmt_ci(*(ci_map.get(r['model'], (pd.NA, pd.NA)))), axis=1)
 
-    table_png = os.path.join(outdir, "exp2_summary_table_CI.png")
-    table_to_png(table, table_png, title="Experiment 2 — Summary (95% CI)")
+    table_csv = os.path.join(outdir, "exp2_summary_table_CI.csv")
+    table.to_csv(table_csv, index=False)
 
     # Print outputs
     outputs_paths = [
-        table_png,
+        table_csv,
         os.path.join(outdir, "exp2_fig1_accuracy_with_ci.png"),
         os.path.join(outdir, "exp2_fig2_damage_rescue_with_ci.png"),
         os.path.join(outdir, "exp2_fig3_netflip_with_ci.png"),
         os.path.join(outdir, "exp2_fig4_position_pick_wrongB.png"),
         os.path.join(outdir, "exp2_fig5_reveal_on_flip.png"),
-        json_path,
+        metrics_csv_path,
     ]
     existing = [p for p in outputs_paths if os.path.exists(p)]
     print("Generated:")
@@ -385,8 +393,8 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
 
     # Return data for tests or further processing
     outputs["summary_df"] = summary_df.to_dict(orient="records")
-    outputs["table_path"] = table_png
-    outputs["json_path"] = json_path
+    outputs["table_path"] = table_csv
+    outputs["metrics_csv_path"] = metrics_csv_path
     return outputs
 
 

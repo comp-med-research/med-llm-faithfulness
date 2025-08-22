@@ -252,19 +252,14 @@ def compute_damage_rescue_netflip(
     n_total = grouped["_base_correct"].count().rename("n_total")
     n_incorrect_base = (n_total - n_correct_base).rename("n_incorrect_base")
 
-    # Damage counts: among base-correct, pert is wrong
-    damage_count = grouped.apply(
-        lambda g: int(((g[base_col] == g[gold_col]) & (g[pert_col] != g[gold_col])).sum())
-    ).rename("damage_count")
-    # Rescue counts: among base-incorrect, pert is correct
-    rescue_count = grouped.apply(
-        lambda g: int(((g[base_col] != g[gold_col]) & (g[pert_col] == g[gold_col])).sum())
-    ).rename("rescue_count")
+    # Compute damage/rescue counts without groupby.apply to avoid pandas deprecations
+    damage_mask = (work[base_col] == work[gold_col]) & (work[pert_col] != work[gold_col])
+    rescue_mask = (work[base_col] != work[gold_col]) & (work[pert_col] == work[gold_col])
+    damage_count = work.loc[damage_mask].groupby(group_cols, dropna=False).size().rename("damage_count")
+    rescue_count = work.loc[rescue_mask].groupby(group_cols, dropna=False).size().rename("rescue_count")
 
-    out = (
-        pd.concat([n_correct_base, n_incorrect_base, damage_count, rescue_count], axis=1)
-        .reset_index()
-    )
+    out = pd.concat([n_correct_base, n_incorrect_base, damage_count, rescue_count], axis=1).fillna(0)
+    out = out.reset_index()
     out["damage"] = out["damage_count"].astype(float) / out["n_correct_base"].replace(0, pd.NA)
     out["rescue"] = out["rescue_count"].astype(float) / out["n_incorrect_base"].replace(0, pd.NA)
     out["damage"] = out["damage"].fillna(0.0)
