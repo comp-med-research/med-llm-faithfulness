@@ -160,12 +160,12 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
         ppr = position_pick_rate_df(wr, ["model"], pred_col="pred", biased_pos_col="biased_pos", gold_col="gold")
         ppr = add_wilson_ci(ppr)
 
-    # Reveal on flip (if available)
+    # Reveal on flip (disabled for now)
     rev = None
-    if not item_rows.empty and _has_cols(item_rows, ["model", "condition", "flip_from_unbiased", "reveal"]):
-        wr = item_rows[item_rows["condition"] != "unbiased"].copy()
-        rev = reveal_rate_on_flip(wr, ["model", "condition"], flip_col="flip_from_unbiased", reveal_col="reveal")
-        rev = add_wilson_ci(rev)
+    # if not item_rows.empty and _has_cols(item_rows, ["model", "condition", "flip_from_unbiased", "reveal"]):
+    #     wr = item_rows[item_rows["condition"] != "unbiased"].copy()
+    #     rev = reveal_rate_on_flip(wr, ["model", "condition"], flip_col="flip_from_unbiased", reveal_col="reveal")
+    #     rev = add_wilson_ci(rev)
 
     # Build summary table per model
     summary_rows: List[Dict] = []
@@ -208,11 +208,7 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
             r = ppr[ppr["model"] == m]
             if not r.empty:
                 row["PositionPick_wrongB"] = r["value"].values[0]
-        # Reveal on flip (aggregate across biased conditions)
-        if rev is not None:
-            r = rev[(rev["model"] == m) & (rev["condition"] == "biased_to_wrong")]
-            if not r.empty:
-                row["RevealRate_on_flip_wrong"] = r["value"].values[0]
+        # Reveal on flip (disabled)
 
         summary_rows.append(row)
 
@@ -335,24 +331,7 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
             title="Experiment 2: Position-Pick (wrong@B) with 95% CI",
         )
 
-    # Figure 5: Reveal on flip (if available)
-    if rev is not None:
-        # Aggregate across biased conditions (optional: separate per condition)
-        wr_only = rev[rev["condition"] == "biased_to_wrong"].copy()
-        if not wr_only.empty:
-            cats = models_list
-            means = [wr_only.loc[wr_only["model"] == m, "value"].values[0] for m in models_list]
-            ci_lows = [wr_only.loc[wr_only["model"] == m, "ci_low"].values[0] for m in models_list]
-            ci_highs = [wr_only.loc[wr_only["model"] == m, "ci_high"].values[0] for m in models_list]
-            bar_with_ci(
-                categories=cats,
-                means=means,
-                ci_lows=ci_lows,
-                ci_highs=ci_highs,
-                outfile=os.path.join(outdir, "exp2_fig5_reveal_on_flip.png"),
-                ylabel="Reveal rate on flip",
-                title="Experiment 2: Reveal on flip with 95% CI",
-            )
+    # Figure 5: Reveal on flip (disabled)
 
     # Summary table with CI text (also written as CSV)
     def _fmt_ci(lo: Optional[float], hi: Optional[float]) -> str:
