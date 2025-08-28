@@ -85,6 +85,221 @@ def _plot_global_comparison(metrics_paths: List[str], outdir: str) -> None:
         plt.close(fig)
 
 
+def _prettify_model_label(raw: str) -> str:
+    """Map file-derived labels to clean model display names.
+
+    Special-cases common models; otherwise drops suffixes and title-cases.
+    """
+    low = raw.lower()
+    if "chatgpt" in low:
+        return "ChatGPT"
+    if "claude" in low:
+        return "Claude"
+    if "gemini" in low:
+        return "Gemini"
+    if "llama" in low and ("405" in low or "405b" in low):
+        return "Llama-405b"
+    base = raw.split(".")[0]
+    base = base.replace("_", " ").replace("-", " ")
+    pretty = base.title().replace("Gpt", "GPT")
+    return pretty
+
+
+def _plot_paired_dots_accuracy(metrics_paths: List[str], outdir: str) -> None:
+    """Paired-dots plot comparing baseline vs macro ablation accuracy per model.
+
+    Expects each metrics CSV to include rows:
+      - scope == "baseline", metric == "accuracy"
+      - scope == "global", metric == "macro_ablation_accuracy"
+    with columns: value, ci_low, ci_high
+    """
+    import numpy as np
+
+    records = []
+    for p in metrics_paths:
+        df = pd.read_csv(p)
+        model = _label_for_csv(p)
+
+        base = df[(df["scope"] == "baseline") & (df["metric"] == "accuracy")]
+        macro = df[(df["scope"] == "global") & (df["metric"] == "macro_ablation_accuracy")]
+        if base.empty or macro.empty:
+            continue
+
+        b = base.iloc[0]
+        m = macro.iloc[0]
+        records.append({
+            "model": model,
+            "baseline": float(b["value"]),
+            "baseline_lo": float(max(0.0, b["value"] - b["ci_low"])),
+            "baseline_hi": float(max(0.0, b["ci_high"] - b["value"])) ,
+            "macro": float(m["value"]),
+            "macro_lo": float(max(0.0, m["value"] - m["ci_low"])) ,
+            "macro_hi": float(max(0.0, m["ci_high"] - m["value"])) ,
+        })
+
+    if not records:
+        return
+
+    models = [_prettify_model_label(r["model"]) for r in records]
+    baseline = np.array([r["baseline"] for r in records])
+    baseline_err = [np.array([r["baseline_lo"] for r in records]), np.array([r["baseline_hi"] for r in records])]
+    macro = np.array([r["macro"] for r in records])
+    macro_err = [np.array([r["macro_lo"] for r in records]), np.array([r["macro_hi"] for r in records])]
+
+    x = np.arange(len(models))
+    offset = 0.18
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    # Baseline points (blue)
+    ax.errorbar(x - offset, baseline, yerr=baseline_err, fmt="x", color="#4C78A8", capsize=3, markersize=8, label="Baseline")
+    # Macro ablation points (orange)
+    ax.errorbar(x + offset, macro, yerr=macro_err, fmt="x", color="#F58518", capsize=3, markersize=8, label="Macro Ablation")
+
+    # Connecting segments
+    for xi, y0, y1 in zip(x, baseline, macro):
+        ax.plot([xi - offset, xi + offset], [y0, y1], color="#B0B0B0", linewidth=1.5, alpha=0.9)
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(models, rotation=0)
+    # Ensure full CI is visible
+    base_low = baseline - baseline_err[0]
+    base_high = baseline + baseline_err[1]
+    macro_low = macro - macro_err[0]
+    macro_high = macro + macro_err[1]
+    ymin = float(min(base_low.min(), macro_low.min()))
+    ymax = float(max(base_high.max(), macro_high.max()))
+    pad = max(0.02, 0.05 * (ymax - ymin if ymax > ymin else 1.0))
+    ax.set_ylim(ymin - pad, ymax + pad)
+    ax.set_ylabel("Accuracy")
+    ax.set_title("Experiment 1: Baseline vs Macro Ablation Accuracy")
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+    ax.legend(loc="lower left")
+
+    fig.tight_layout()
+    out_path = os.path.join(outdir, "exp1_paired_dots_accuracy.png")
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+
+def _plot_causal_density(metrics_paths: List[str], outdir: str) -> None:
+    """Bar plot of causal density (per-example mean) with 95% CI across models."""
+    import numpy as np
+
+    rows = []
+    for p in metrics_paths:
+        df = pd.read_csv(p)
+        sel = df[(df["scope"] == "global") & (df["metric"] == "causal_density_mean")]
+        if sel.empty:
+            continue
+        r = sel.iloc[0]
+        rows.append({
+            "model": _prettify_model_label(_label_for_csv(p)),
+            "value": float(r["value"]),
+            "lo": float(max(0.0, r["value"] - r["ci_low"])) ,
+            "hi": float(max(0.0, r["ci_high"] - r["value"])) ,
+        })
+
+    if not rows:
+        return
+
+    models = [r["model"] for r in rows]
+    vals = np.array([r["value"] for r in rows])
+    yerr = [np.array([r["lo"] for r in rows]), np.array([r["hi"] for r in rows])]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    x = np.arange(len(models))
+    ax.bar(x, vals, yerr=yerr, capsize=4, color="#F58518", edgecolor="#C66A12")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(models)
+    ymin = float((vals - yerr[0]).min())
+    ymax = float((vals + yerr[1]).max())
+    pad = max(0.01, 0.1 * (ymax - ymin if ymax > ymin else 1.0))
+    ax.set_ylim(max(0.0, ymin - pad), ymax + pad)
+    ax.set_ylabel("Causal Density")
+    ax.set_title("Experiment 1: Causal Density")
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+
+    fig.tight_layout()
+    out_path = os.path.join(outdir, "exp1_causal_density.png")
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+
+def _plot_damage_rescue_netflip_grouped(metrics_paths: List[str], outdir: str) -> None:
+    """Grouped bars per model: Damage rate, Rescue rate, Netflip vs baseline."""
+    import numpy as np
+
+    rows = []
+    for p in metrics_paths:
+        df = pd.read_csv(p)
+        model = _label_for_csv(p)
+        g = df[df["scope"] == "global"]
+        dmg = g[g["metric"] == "macro_ablation_damage_rate"]
+        rsc = g[g["metric"] == "macro_ablation_rescue_rate"]
+        nfl = g[g["metric"] == "macro_ablation_netflip_vs_baseline"]
+        if dmg.empty or rsc.empty or nfl.empty:
+            continue
+        d = dmg.iloc[0]
+        r = rsc.iloc[0]
+        n = nfl.iloc[0]
+        rows.append({
+            "model": _prettify_model_label(model),
+            "damage": float(d["value"]),
+            "damage_lo": float(max(0.0, d["value"] - d["ci_low"])) ,
+            "damage_hi": float(max(0.0, d["ci_high"] - d["value"])) ,
+            "rescue": float(r["value"]),
+            "rescue_lo": float(max(0.0, r["value"] - r["ci_low"])) ,
+            "rescue_hi": float(max(0.0, r["ci_high"] - r["value"])) ,
+            "netflip": float(n["value"]),
+            "netflip_lo": float(max(0.0, n["value"] - n["ci_low"])) ,
+            "netflip_hi": float(max(0.0, n["ci_high"] - n["value"])) ,
+        })
+
+    if not rows:
+        return
+
+    models = [r["model"] for r in rows]
+    x = np.arange(len(models))
+    width = 0.22
+
+    # Plot damage downward by negating the value. Swap CI sides accordingly.
+    damage = -np.array([r["damage"] for r in rows])
+    damage_err = [
+        np.array([r["damage_hi"] for r in rows]),  # distance below the bar
+        np.array([r["damage_lo"] for r in rows]),  # distance above the bar
+    ]
+    rescue = np.array([r["rescue"] for r in rows])
+    rescue_err = [np.array([r["rescue_lo"] for r in rows]), np.array([r["rescue_hi"] for r in rows])]
+    netflip = np.array([r["netflip"] for r in rows])
+    netflip_err = [np.array([r["netflip_lo"] for r in rows]), np.array([r["netflip_hi"] for r in rows])]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.bar(x - width, damage, width=width, yerr=damage_err, capsize=4, color="#4C78A8", label="Damage")
+    ax.bar(x, rescue, width=width, yerr=rescue_err, capsize=4, color="#F58518", label="Rescue")
+    ax.bar(x + width, netflip, width=width, yerr=netflip_err, capsize=4, color="#54A24B", label="Netflip")
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(models)
+    # Ensure full CI is visible for all bars (including negative damage)
+    dmg_low = damage - damage_err[0]
+    dmg_high = damage + damage_err[1]
+    rsc_low = rescue - rescue_err[0]
+    rsc_high = rescue + rescue_err[1]
+    nfl_low = netflip - netflip_err[0]
+    nfl_high = netflip + netflip_err[1]
+    ymin = float(min(dmg_low.min(), rsc_low.min(), nfl_low.min()))
+    ymax = float(max(dmg_high.max(), rsc_high.max(), nfl_high.max()))
+    pad = max(0.02, 0.05 * (ymax - ymin if ymax > ymin else 1.0))
+    ax.set_ylim(ymin - pad, ymax + pad)
+    ax.set_ylabel("Rate")
+    ax.set_title("Experiment 1: Damage, Rescue, and Netflip")
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+    ax.legend()
+
+    fig.tight_layout()
+    out_path = os.path.join(outdir, "exp1_damage_rescue_netflip_grouped.png")
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+
 def _plot_per_ablation(metrics_path: str, outdir: str) -> None:
     df = pd.read_csv(metrics_path)
     model_label = _label_for_csv(metrics_path)
@@ -150,6 +365,15 @@ def main() -> None:
 
     # Global comparison plots (bars across files)
     _plot_global_comparison(args.metrics, outdir)
+
+    # Paired-dots accuracy (baseline vs macro ablation)
+    _plot_paired_dots_accuracy(args.metrics, outdir)
+
+    # Grouped bars: Damage, Rescue, Netflip per model
+    _plot_damage_rescue_netflip_grouped(args.metrics, outdir)
+
+    # Causal density across models
+    _plot_causal_density(args.metrics, outdir)
 
     # Per-ablation plots for each file if requested
     if args.per_ablation:

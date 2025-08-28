@@ -30,6 +30,7 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import ast
 
 from analysis.metrics import (
     compute_accuracy,
@@ -82,6 +83,264 @@ def _prefer_preaggregated(df: pd.DataFrame, metric: str) -> Optional[pd.DataFram
         return found
     return None
 
+
+def _prettify_model_label(raw: str) -> str:
+    low = str(raw).lower()
+    if "chatgpt" in low:
+        return "ChatGPT"
+    if "claude" in low:
+        return "Claude"
+    if "gemini" in low:
+        return "Gemini"
+    if "llama" in low and ("405" in low or "405b" in low):
+        return "Llama-405b"
+    return str(raw)
+
+
+def _plot_accuracy_slopegraph(
+    acc_unb: Optional[pd.DataFrame],
+    acc_bg: Optional[pd.DataFrame],
+    acc_bw: Optional[pd.DataFrame],
+    models_list: List[str],
+    outfile: str,
+) -> None:
+    """Slopegraph of accuracy by condition with 95% CIs for each model."""
+    if acc_unb is None or acc_bg is None or acc_bw is None:
+        return
+    import numpy as _np
+    import matplotlib.pyplot as _plt
+
+    x = _np.array([0, 1, 2])
+    x_labels = ["Unbiased", "Bias→Gold", "Bias→Wrong"]
+
+    color_map = {
+        "Claude": "#4C78A8",
+        "ChatGPT": "#F58518",
+        "Gemini": "#54A24B",
+    }
+    model_offsets = {"Claude": -0.02, "ChatGPT": 0.0, "Gemini": 0.02}
+
+    fig, ax = _plt.subplots(figsize=(10, 5))
+
+    all_lows = []
+    all_highs = []
+
+    for m in models_list:
+        pretty = _prettify_model_label(m)
+        col = color_map.get(pretty, None)
+
+        def _vals(df: pd.DataFrame) -> Tuple[float, float, float]:
+            row = df[df["model"] == m].iloc[0]
+            v = float(row["value"])
+            lo = row.get("ci_low", v)
+            hi = row.get("ci_high", v)
+            lo = v if lo is None or pd.isna(lo) else float(lo)
+            hi = v if hi is None or pd.isna(hi) else float(hi)
+            if lo > hi:
+                lo, hi = hi, lo
+            return v, lo, hi
+
+        v0, lo0, hi0 = _vals(acc_unb)
+        v1, lo1, hi1 = _vals(acc_bg)
+        v2, lo2, hi2 = _vals(acc_bw)
+        y = _np.array([v0, v1, v2], dtype=float)
+        lo = _np.array([lo0, lo1, lo2], dtype=float)
+        hi = _np.array([hi0, hi1, hi2], dtype=float)
+
+        # Keep decimals (0–1) for plotting, per request
+
+        # Slight constant horizontal offset per model to avoid error bar overlap
+        mo = model_offsets.get(pretty, 0.0)
+        xi = x + mo
+        ax.plot(xi, y, marker="o", linewidth=2.0, markersize=6, label=pretty, color=col, zorder=4)
+        err_low = _np.maximum(0.0, y - lo)
+        err_high = _np.maximum(0.0, hi - y)
+        err_low = _np.nan_to_num(err_low, nan=0.0)
+        err_high = _np.nan_to_num(err_high, nan=0.0)
+        # Draw vertical error bars explicitly to avoid any orientation issues
+        # Use neutral color and smaller caps so they don't look like horizontal bars
+        cap_half = 0.015
+        bottoms = lo
+        tops = hi
+        for _x, _y0, _y1 in zip(xi, bottoms, tops):
+            ax.vlines(_x, _y0, _y1, colors=col, linewidth=1.6, alpha=0.9, zorder=5)
+            ax.hlines(_y0, _x - cap_half, _x + cap_half, colors=col, linewidth=1.6, alpha=0.9, zorder=5)
+            ax.hlines(_y1, _x - cap_half, _x + cap_half, colors=col, linewidth=1.6, alpha=0.9, zorder=5)
+
+        all_lows.append(lo)
+        all_highs.append(hi)
+
+    # Set requested y-scale
+    ax.set_ylim(0.60, 1.00)
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(x_labels)
+    ax.set_ylabel("Accuracy")
+    import math as _math
+    y0, y1 = ax.get_ylim()
+    tick_start = 0.05 * _math.floor(y0 / 0.05)
+    ticks = _np.arange(tick_start, y1 + 0.0001, 0.05)
+    ax.set_yticks(ticks)
+    ax.set_title("Experiment 2: Accuracy by Condition")
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+    ax.legend(title=None)
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(outfile), exist_ok=True)
+    fig.savefig(outfile, dpi=200)
+    _plt.close(fig)
+
+
+def _parse_ci_tuple(s: object) -> Tuple[Optional[float], Optional[float]]:
+    """Parse CI tuple stored as a string like '(np.float64(0.86), np.float64(0.96))'.
+
+    Uses ast.literal_eval after stripping 'np.float64' wrappers; no regex fallbacks.
+    """
+    if s is None or (isinstance(s, float) and pd.isna(s)):
+        return (None, None)
+    text = str(s).strip()
+    try:
+        cleaned = text.replace("np.float64", "")
+        val = ast.literal_eval(cleaned)
+        if isinstance(val, (list, tuple)) and len(val) >= 2:
+            lo, hi = float(val[0]), float(val[1])
+            if lo > hi:
+                lo, hi = hi, lo
+            return (lo, hi)
+    except Exception:
+        return (None, None)
+    return (None, None)
+
+
+def analyze_from_metrics(metrics_csvs: List[str], outdir: str) -> Dict[str, Dict]:
+    """Build Exp2 figures from pre-aggregated exp2_metrics.csv files from each model."""
+    rows: List[Dict] = []
+    for path in metrics_csvs:
+        df = pd.read_csv(path)
+        if df.empty:
+            continue
+        r = df.iloc[0]
+        model_raw = r.get("model", "")
+        model = _prettify_model_label(model_raw)
+        # Parse CI strings directly from each model's exp2_metrics.csv (ground truth)
+        unb_ci = _parse_ci_tuple(r.get("Acc_unbiased_ci"))
+        bg_ci = _parse_ci_tuple(r.get("Acc_bias_gold_ci"))
+        bw_ci = _parse_ci_tuple(r.get("Acc_bias_wrong_ci"))
+        lo_unb, hi_unb = unb_ci
+        lo_bg, hi_bg = bg_ci
+        lo_bw, hi_bw = bw_ci
+        rows.append({
+            "model": model,
+            "Acc_unbiased": float(r.get("Acc_unbiased", 0.0)),
+            "Acc_unbiased_ci_low": lo_unb,
+            "Acc_unbiased_ci_high": hi_unb,
+            "Acc_bias_gold": float(r.get("Acc_bias_gold", 0.0)),
+            "Acc_bias_gold_ci_low": lo_bg,
+            "Acc_bias_gold_ci_high": hi_bg,
+            "Acc_bias_wrong": float(r.get("Acc_bias_wrong", 0.0)),
+            "Acc_bias_wrong_ci_low": lo_bw,
+            "Acc_bias_wrong_ci_high": hi_bw,
+            "Damage_rate_wrong": float(r.get("Damage_rate_wrong", 0.0)),
+            "Rescue_rate_wrong": float(r.get("Rescue_rate_wrong", 0.0)),
+            "NetFlip_wrong": float(r.get("NetFlip_wrong", 0.0)),
+            "PositionPick_wrongB": float(r.get("PositionPick_wrongB", 0.0)),
+        })
+
+    if not rows:
+        return {}
+
+    os.makedirs(outdir, exist_ok=True)
+    metrics = pd.DataFrame(rows)
+    metrics.to_csv(os.path.join(outdir, "exp2_metrics_merged.csv"), index=False)
+
+    # Prepare DataFrames for slopegraph API
+    acc_unb_raw = metrics[["model", "Acc_unbiased", "Acc_unbiased_ci_low", "Acc_unbiased_ci_high"]].rename(
+        columns={"Acc_unbiased": "value", "Acc_unbiased_ci_low": "ci_low", "Acc_unbiased_ci_high": "ci_high"}
+    )
+    acc_bg_raw = metrics[["model", "Acc_bias_gold", "Acc_bias_gold_ci_low", "Acc_bias_gold_ci_high"]].rename(
+        columns={"Acc_bias_gold": "value", "Acc_bias_gold_ci_low": "ci_low", "Acc_bias_gold_ci_high": "ci_high"}
+    )
+    acc_bw_raw = metrics[["model", "Acc_bias_wrong", "Acc_bias_wrong_ci_low", "Acc_bias_wrong_ci_high"]].rename(
+        columns={"Acc_bias_wrong": "value", "Acc_bias_wrong_ci_low": "ci_low", "Acc_bias_wrong_ci_high": "ci_high"}
+    )
+
+    # If CI columns are entirely missing/empty due to parsing, fall back to the raw strings
+    def _ensure_ci(df_num: pd.DataFrame, src_df: pd.DataFrame, src_col: str) -> pd.DataFrame:
+        if df_num["ci_low"].isna().all() and "{}".format(src_col) in src_df.columns:
+            parsed = src_df[["model", src_col]].copy()
+            lows: List[Optional[float]] = []
+            highs: List[Optional[float]] = []
+            for _, r in parsed.iterrows():
+                lo, hi = _parse_ci_tuple(r[src_col])
+                lows.append(lo)
+                highs.append(hi)
+            m = df_num.merge(pd.DataFrame({"model": parsed["model"], "_lo": lows, "_hi": highs}), on="model", how="left")
+            m["ci_low"] = m["ci_low"].fillna(m["_lo"])
+            m["ci_high"] = m["ci_high"].fillna(m["_hi"])
+            m = m.drop(columns=["_lo", "_hi"])
+            return m
+        return df_num
+
+    acc_unb_raw = _ensure_ci(acc_unb_raw, metrics, "Acc_unbiased_ci")
+    acc_bg_raw = _ensure_ci(acc_bg_raw, metrics, "Acc_bias_gold_ci")
+    acc_bw_raw = _ensure_ci(acc_bw_raw, metrics, "Acc_bias_wrong_ci")
+
+    models_list = metrics["model"].tolist()
+    _plot_accuracy_slopegraph(
+        acc_unb_raw, acc_bg_raw, acc_bw_raw, models_list,
+        outfile=os.path.join(outdir, "exp2_fig2a_accuracy_slopegraph.png"),
+    )
+
+    # Grouped accuracy per model and condition -> accuracy_plot.png
+    def _vals_in_order(df_num: pd.DataFrame, models: List[str]) -> List[float]:
+        out: List[float] = []
+        for m in models:
+            row = df_num[df_num["model"] == m]
+            out.append(float(row["value"].values[0]) if not row.empty else 0.0)
+        return out
+
+    def _ci_in_order(df_num: pd.DataFrame, models: List[str], bound: str) -> List[float]:
+        out: List[float] = []
+        for m in models:
+            row = df_num[df_num["model"] == m]
+            if not row.empty and pd.notna(row[bound].values[0]):
+                out.append(float(row[bound].values[0]))
+            else:
+                # If CI missing, fall back to the mean (zero-length whisker)
+                v = float(row["value"].values[0]) if not row.empty else 0.0
+                out.append(v)
+        return out
+
+    series = {
+        "Unbiased": _vals_in_order(acc_unb_raw, models_list),
+        "Bias→Gold": _vals_in_order(acc_bg_raw, models_list),
+        "Bias→Wrong": _vals_in_order(acc_bw_raw, models_list),
+    }
+    series_ci = {
+        "Unbiased": (
+            _ci_in_order(acc_unb_raw, models_list, "ci_low"),
+            _ci_in_order(acc_unb_raw, models_list, "ci_high"),
+        ),
+        "Bias→Gold": (
+            _ci_in_order(acc_bg_raw, models_list, "ci_low"),
+            _ci_in_order(acc_bg_raw, models_list, "ci_high"),
+        ),
+        "Bias→Wrong": (
+            _ci_in_order(acc_bw_raw, models_list, "ci_low"),
+            _ci_in_order(acc_bw_raw, models_list, "ci_high"),
+        ),
+    }
+
+    grouped_bars_with_ci(
+        x_labels=models_list,
+        series=series,
+        series_ci=series_ci,
+        outfile=os.path.join(outdir, "accuracy_plot.png"),
+        ylabel="Accuracy",
+        title="Experiment 2: Accuracy by Condition",
+    )
+
+    return {"merged_metrics_path": os.path.join(outdir, "exp2_metrics_merged.csv")}
 
 def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> Dict[str, Dict]:
     _safe_mkdir(outdir)
@@ -286,6 +545,103 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
             title="Experiment 2: Damage vs Rescue (wrong) with 95% CI",
         )
 
+    # Figure 2a: Accuracy slopegraph across conditions
+    # If slopegraph CI parsing proves brittle for some inputs, also emit a grouped bar chart using merged CI
+    if acc_unb_raw is not None and acc_bg_raw is not None and acc_bw_raw is not None:
+        _plot_accuracy_slopegraph(
+            acc_unb_raw, acc_bg_raw, acc_bw_raw, models_list,
+            outfile=os.path.join(outdir, "exp2_fig2a_accuracy_slopegraph.png"),
+        )
+
+        # Grouped bars with CI from the same data
+        cats = ["Unbiased", "Bias→Gold", "Bias→Wrong"]
+        # Build per-model grouped series is messy; instead plot model-averaged bars with CIs per condition
+        import numpy as _np
+        def _mean_ci(df: pd.DataFrame) -> Tuple[float, float, float]:
+            vals = df["value"].astype(float).to_list()
+            los = df["ci_low"].astype(float).to_list()
+            his = df["ci_high"].astype(float).to_list()
+            m = float(_np.mean(vals)) if vals else 0.0
+            lo = float(_np.mean(los)) if los else m
+            hi = float(_np.mean(his)) if his else m
+            return m, lo, hi
+        m0, lo0, hi0 = _mean_ci(acc_unb_raw)
+        m1, lo1, hi1 = _mean_ci(acc_bg_raw)
+        m2, lo2, hi2 = _mean_ci(acc_bw_raw)
+        bar_with_ci(
+            categories=cats,
+            means=[m0, m1, m2],
+            ci_lows=[lo0, lo1, lo2],
+            ci_highs=[hi0, hi1, hi2],
+            outfile=os.path.join(outdir, "exp2_fig2a_accuracy_bars_ci.png"),
+            ylabel="Accuracy",
+            title="Experiment 2: Accuracy by Condition (Bars with 95% CI)",
+        )
+
+    # Figure 2b: Position Pick Rate (option B) heatmap per model × condition
+    if not item_rows.empty and _has_cols(item_rows, ["model", "condition", "pred"]):
+        import numpy as _np
+        import matplotlib.pyplot as _plt
+
+        # Compute P(pred == 'B') per (model, condition)
+        work = item_rows.copy()
+        work["_picked_B"] = (work["pred"].astype(str).str.upper() == "B").astype(int)
+        grouped = work.groupby(["model", "condition"], dropna=False)["_picked_B"].mean().reset_index()
+
+        cond_order = ["unbiased", "biased_to_gold", "biased_to_wrong"]
+        cond_labels = ["Unbiased", "Bias→Gold", "Bias→Wrong"]
+        # Prefer a readable model order
+        pretty_map = {m: _prettify_model_label(m) for m in models_list}
+        preferred_order = ["Claude", "ChatGPT", "Gemini"]
+        y_models_pretty = [m for m in preferred_order if m in {pretty_map[x] for x in models_list}]
+        # Include any remaining models not in the preferred list
+        for m in models_list:
+            p = pretty_map[m]
+            if p not in y_models_pretty:
+                y_models_pretty.append(p)
+
+        # Build matrix values aligned with y_models_pretty × cond_order
+        def _lookup(pretty_name: str, cond: str) -> float:
+            # Find original raw model name that maps to pretty_name
+            raw_names = [k for k, v in pretty_map.items() if v == pretty_name]
+            if not raw_names:
+                return 0.0
+            sub = grouped[(grouped["model"].isin(raw_names)) & (grouped["condition"] == cond)]
+            if sub.empty:
+                return 0.0
+            return float(sub["_picked_B"].values[0])
+
+        mat = _np.array([[ _lookup(m, c) for c in cond_order ] for m in y_models_pretty], dtype=float)
+
+        fig, ax = _plt.subplots(figsize=(8, 4.5))
+        im = ax.imshow(mat, cmap="Blues", vmin=0.0, vmax=1.0, aspect="auto")
+        # Axes labels and ticks
+        ax.set_xticks(list(range(len(cond_labels))))
+        ax.set_xticklabels(cond_labels, rotation=30, ha="right")
+        ax.set_yticks(list(range(len(y_models_pretty))))
+        ax.set_yticklabels(y_models_pretty)
+        ax.set_title("Fig 2b — Position Pick Rate (heatmap)")
+
+        # Annotate cells
+        for i in range(mat.shape[0]):
+            for j in range(mat.shape[1]):
+                val = mat[i, j]
+                txt_color = "black" if val < 0.6 else "white"
+                ax.text(j, i, f"{val:.2f}", va="center", ha="center", color=txt_color)
+
+        # Gridlines
+        ax.set_xticks(_np.arange(-0.5, len(cond_labels), 1), minor=True)
+        ax.set_yticks(_np.arange(-0.5, len(y_models_pretty), 1), minor=True)
+        ax.grid(which="minor", color="#CCCCCC", linestyle=":", linewidth=1)
+        ax.tick_params(which="minor", bottom=False, left=False)
+
+        cbar = fig.colorbar(im, ax=ax)
+        cbar.ax.set_ylabel("Position Pick Rate (PPR for option B)")
+        fig.tight_layout()
+        _safe_mkdir(outdir)
+        fig.savefig(os.path.join(outdir, "exp2_fig2b_ppr_heatmap.png"), dpi=200)
+        _plt.close(fig)
+
     # Figure 3: NetFlip_wrong bars
     if drn_wrong is not None:
         cats = models_list
@@ -392,13 +748,16 @@ def _synthetic_df() -> pd.DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Experiment 2 analysis")
     parser.add_argument("--input", required=False, help="Input CSV path for Experiment 2 per-item or aggregated data")
+    parser.add_argument("--metrics", nargs="*", help="Paths to exp2_metrics.csv files from each model (merged)")
     parser.add_argument("--outdir", required=True, help="Directory to write outputs (PNGs/JSON)")
     parser.add_argument("--models", required=False, help="Comma-separated list of models to include (default: all)")
     args = parser.parse_args()
 
     models = [m.strip() for m in args.models.split(",")] if args.models else None
 
-    if args.input and os.path.exists(args.input):
+    if args.metrics:
+        analyze_from_metrics(args.metrics, args.outdir)
+    elif args.input and os.path.exists(args.input):
         analyze(args.input, args.outdir, models)
     else:
         print("No --input provided or file not found; running with synthetic data to exercise pipeline.")
