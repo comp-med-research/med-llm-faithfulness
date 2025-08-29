@@ -177,8 +177,11 @@ def _plot_paired_dots_accuracy(metrics_paths: List[str], outdir: str) -> None:
     ax.legend(loc="lower left")
 
     fig.tight_layout()
-    out_path = os.path.join(outdir, "exp1_paired_dots_accuracy.png")
-    fig.savefig(out_path, dpi=200)
+    out_path_png = os.path.join(outdir, "exp1_paired_dots_accuracy.png")
+    fig.savefig(out_path_png, dpi=200)
+    # Also save a vector PDF for LaTeX inclusion
+    out_path_pdf = os.path.join(outdir, "exp1_paired_dots_accuracy.pdf")
+    fig.savefig(out_path_pdf, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 def _plot_causal_density(metrics_paths: List[str], outdir: str) -> None:

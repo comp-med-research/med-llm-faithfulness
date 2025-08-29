@@ -109,6 +109,11 @@ def _plot_accuracy_slopegraph(
         return
     import numpy as _np
     import matplotlib.pyplot as _plt
+    import matplotlib as _mpl
+
+    # Ensure vector-friendly fonts in PDFs for LaTeX inclusion
+    _mpl.rcParams["pdf.fonttype"] = 42
+    _mpl.rcParams["ps.fonttype"] = 42
 
     x = _np.array([0, 1, 2])
     x_labels = ["Unbiased", "Bias→Gold", "Bias→Wrong"]
@@ -153,25 +158,12 @@ def _plot_accuracy_slopegraph(
         mo = model_offsets.get(pretty, 0.0)
         xi = x + mo
         ax.plot(xi, y, marker="o", linewidth=2.0, markersize=6, label=pretty, color=col, zorder=4)
-        err_low = _np.maximum(0.0, y - lo)
-        err_high = _np.maximum(0.0, hi - y)
-        err_low = _np.nan_to_num(err_low, nan=0.0)
-        err_high = _np.nan_to_num(err_high, nan=0.0)
-        # Draw vertical error bars explicitly to avoid any orientation issues
-        # Use neutral color and smaller caps so they don't look like horizontal bars
-        cap_half = 0.015
-        bottoms = lo
-        tops = hi
-        for _x, _y0, _y1 in zip(xi, bottoms, tops):
-            ax.vlines(_x, _y0, _y1, colors=col, linewidth=1.6, alpha=0.9, zorder=5)
-            ax.hlines(_y0, _x - cap_half, _x + cap_half, colors=col, linewidth=1.6, alpha=0.9, zorder=5)
-            ax.hlines(_y1, _x - cap_half, _x + cap_half, colors=col, linewidth=1.6, alpha=0.9, zorder=5)
 
         all_lows.append(lo)
         all_highs.append(hi)
 
     # Set requested y-scale
-    ax.set_ylim(0.60, 1.00)
+    ax.set_ylim(0.75, 1.00)
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(x_labels)
@@ -186,8 +178,8 @@ def _plot_accuracy_slopegraph(
     ax.legend(title=None)
 
     fig.tight_layout()
-    os.makedirs(os.path.dirname(outfile), exist_ok=True)
-    fig.savefig(outfile, dpi=200)
+    os.makedirs(os.path.dirname(outfile) or ".", exist_ok=True)
+    fig.savefig(outfile, dpi=300, bbox_inches="tight")
     _plt.close(fig)
 
 
@@ -290,6 +282,11 @@ def analyze_from_metrics(metrics_csvs: List[str], outdir: str) -> Dict[str, Dict
         acc_unb_raw, acc_bg_raw, acc_bw_raw, models_list,
         outfile=os.path.join(outdir, "exp2_fig2a_accuracy_slopegraph.png"),
     )
+    # Also save a PDF version for LaTeX
+    _plot_accuracy_slopegraph(
+        acc_unb_raw, acc_bg_raw, acc_bw_raw, models_list,
+        outfile=os.path.join(outdir, "exp2_fig2a_accuracy_slopegraph.pdf"),
+    )
 
     # Grouped accuracy per model and condition -> accuracy_plot.png
     def _vals_in_order(df_num: pd.DataFrame, models: List[str]) -> List[float]:
@@ -339,6 +336,119 @@ def analyze_from_metrics(metrics_csvs: List[str], outdir: str) -> Dict[str, Dict
         ylabel="Accuracy",
         title="Experiment 2: Accuracy by Condition",
     )
+
+    # New: Heatmap of position pick rate for letter 'B' per condition, per model
+    # We need per-item CSVs to compute this precisely per user's conditioning
+    def _find_item_csv_for_metrics_path(metrics_path: str) -> Optional[str]:
+        # metrics_path .../<model>/analysis/exp2_metrics.csv → look in parent dir for exp2_results*.csv
+        model_dir = os.path.dirname(os.path.dirname(os.path.abspath(metrics_path)))
+        if not os.path.isdir(model_dir):
+            return None
+        try:
+            for name in os.listdir(model_dir):
+                if name.lower().startswith("exp2_results") and name.lower().endswith(".csv"):
+                    return os.path.join(model_dir, name)
+        except Exception:
+            return None
+        return None
+
+    per_item_paths: List[Tuple[str, str]] = []  # (pretty_model, path)
+    for p in metrics_csvs:
+        item_csv = _find_item_csv_for_metrics_path(p)
+        if item_csv and os.path.exists(item_csv):
+            # Try to infer pretty model label from the folder name
+            model_folder = os.path.basename(os.path.dirname(item_csv))
+            pretty = _prettify_model_label(model_folder)
+            per_item_paths.append((pretty, item_csv))
+
+    if per_item_paths:
+        import numpy as _np
+        import matplotlib.pyplot as _plt
+        import matplotlib as _mpl
+
+        _mpl.rcParams["pdf.fonttype"] = 42
+        _mpl.rcParams["ps.fonttype"] = 42
+
+        # Maintain preferred model order where applicable
+        preferred_order = ["Claude", "ChatGPT", "Gemini"]
+        # Load and compute PPR for 'B' under each condition per user's rules
+        conds = ["unbiased", "biased_to_gold", "biased_to_wrong"]
+        cond_labels = ["Unbiased", "Bias→Gold", "Bias→Wrong"]
+
+        model_to_rates: Dict[str, List[float]] = {}
+        for pretty, path in per_item_paths:
+            try:
+                df = pd.read_csv(path)
+            except Exception:
+                continue
+            if df.empty:
+                continue
+            # Normalize casing
+            for col in ["pred", "gold", "biased_pos"]:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.strip().str.upper()
+            rates: List[float] = []
+            # Unbiased: P(pred=='B' | gold=='B', condition=='unbiased')
+            sub_unb = df[(df.get("condition") == "unbiased") & (df.get("gold") == "B")]
+            r0 = float(sub_unb["pred"].eq("B").mean()) if not sub_unb.empty else 0.0
+            # Biased→Gold: condition is biased_to_gold, compute P(pred=='B')
+            sub_bg = df[(df.get("condition") == "biased_to_gold")]
+            r1 = float(sub_bg["pred"].eq("B").mean()) if not sub_bg.empty else 0.0
+            # Biased→Wrong: condition is biased_to_wrong, compute P(pred=='B')
+            sub_bw = df[(df.get("condition") == "biased_to_wrong")]
+            r2 = float(sub_bw["pred"].eq("B").mean()) if not sub_bw.empty else 0.0
+            rates = [r0, r1, r2]
+            model_to_rates[pretty] = rates
+
+        if model_to_rates:
+            # Order models: preferred first then any remaining
+            ordered_models: List[str] = [m for m in preferred_order if m in model_to_rates.keys()]
+            for m in sorted(model_to_rates.keys()):
+                if m not in ordered_models:
+                    ordered_models.append(m)
+
+            mat = _np.array([model_to_rates[m] for m in ordered_models], dtype=float)
+            fig, ax = _plt.subplots(figsize=(9, 5.2))
+            im = ax.imshow(mat, cmap="Blues", vmin=0.0, vmax=1.0, aspect="auto")
+
+            ax.set_xticks(list(range(len(cond_labels))))
+            ax.set_xticklabels(cond_labels, rotation=0)
+            ax.set_yticks(list(range(len(ordered_models))))
+            ax.set_yticklabels(ordered_models)
+            ax.set_title("Experiment 2: Position Pick Rate @ Position B")
+
+            # Annotate cells with bold white/black depending on value (larger font)
+            for i in range(mat.shape[0]):
+                for j in range(mat.shape[1]):
+                    val = mat[i, j]
+                    txt_color = "white" if val >= 0.6 else "black"
+                    ax.text(
+                        j,
+                        i,
+                        f"{val:.2f}",
+                        va="center",
+                        ha="center",
+                        color=txt_color,
+                        fontweight="bold",
+                        fontsize=22,
+                    )
+
+            # Minor gridlines between cells
+            ax.set_xticks(_np.arange(-0.5, len(cond_labels), 1), minor=True)
+            ax.set_yticks(_np.arange(-0.5, len(ordered_models), 1), minor=True)
+            ax.grid(which="minor", color="#CCCCCC", linestyle=":", linewidth=1)
+            ax.tick_params(which="minor", bottom=False, left=False)
+
+            cbar = fig.colorbar(im, ax=ax)
+            cbar.ax.set_ylabel("Proportion of Picks")
+
+            fig.tight_layout()
+            os.makedirs(outdir, exist_ok=True)
+            png_path = os.path.join(outdir, "exp2_fig2b_pprB_heatmap.png")
+            pdf_path = os.path.join(outdir, "exp2_fig2b_pprB_heatmap.pdf")
+            fig.savefig(png_path, dpi=300, bbox_inches="tight")
+            fig.savefig(pdf_path, dpi=300, bbox_inches="tight")
+            _plt.close(fig)
 
     return {"merged_metrics_path": os.path.join(outdir, "exp2_metrics_merged.csv")}
 
@@ -551,6 +661,11 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
         _plot_accuracy_slopegraph(
             acc_unb_raw, acc_bg_raw, acc_bw_raw, models_list,
             outfile=os.path.join(outdir, "exp2_fig2a_accuracy_slopegraph.png"),
+        )
+        # Also emit a PDF version
+        _plot_accuracy_slopegraph(
+            acc_unb_raw, acc_bg_raw, acc_bw_raw, models_list,
+            outfile=os.path.join(outdir, "exp2_fig2a_accuracy_slopegraph.pdf"),
         )
 
         # Grouped bars with CI from the same data
