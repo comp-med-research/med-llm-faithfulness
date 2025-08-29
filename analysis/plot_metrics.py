@@ -27,6 +27,7 @@ from typing import List
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as _np
+import matplotlib as _mpl
 
 
 GLOBAL_METRICS_TO_PLOT = [
@@ -39,6 +40,21 @@ GLOBAL_METRICS_TO_PLOT = [
     ("global", "netflip_damage_minus_rescue", "NetFlip (damage - rescue)"),
     ("global", "causal_density_mean", "Causal density (per-example mean)"),
 ]
+
+
+def _set_publication_rc() -> None:
+    _mpl.rcParams.update({
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "text.usetex": False,
+        "savefig.bbox": "tight",
+        "figure.autolayout": False,
+        "axes.titlesize": 16,
+        "axes.labelsize": 16,
+        "xtick.labelsize": 14,
+        "ytick.labelsize": 14,
+        "legend.fontsize": 13,
+    })
 
 
 def _label_for_csv(path: str) -> str:
@@ -175,7 +191,7 @@ def _plot_paired_dots_accuracy(metrics_paths: List[str], outdir: str) -> None:
     ax.set_ylabel("Accuracy")
     ax.set_title("Experiment 1: Baseline vs Macro Ablation Accuracy")
     ax.grid(axis="y", linestyle=":", alpha=0.5)
-    ax.legend(loc="lower left")
+    ax.legend(loc="upper left")
 
     fig.tight_layout()
     out_path_png = os.path.join(outdir, "exp1_paired_dots_accuracy.png")
@@ -449,6 +465,9 @@ def main() -> None:
             first_dir = os.path.dirname(os.path.abspath(args.metrics[0]))
             outdir = os.path.join(first_dir, "plots")
             _ensure_outdir(outdir)
+
+    # Apply consistent publication rc defaults
+    _set_publication_rc()
 
     # Global comparison plots (bars across files)
     _plot_global_comparison(args.metrics, outdir)

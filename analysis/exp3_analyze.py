@@ -34,11 +34,12 @@ def _set_publication_rc() -> None:
         "text.usetex": False,
         "savefig.bbox": "tight",
         "figure.autolayout": False,
-        "axes.titlesize": 14,
-        "axes.labelsize": 12,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "legend.fontsize": 10,
+        "figure.titlesize": 16,
+        "axes.titlesize": 16,
+        "axes.labelsize": 16,
+        "xtick.labelsize": 14,
+        "ytick.labelsize": 14,
+        "legend.fontsize": 13,
     })
 
 
@@ -578,7 +579,7 @@ def _plot_hint_change_stacked(by_cond: Dict[str, pd.DataFrame], outfile: str) ->
         ax.yaxis.set_major_formatter(_mtick.PercentFormatter(xmax=1.0))
         ax.grid(axis="y", linestyle=":", alpha=0.5)
         ax.tick_params(axis='x', rotation=30, labelrotation=30)
-        # Annotate with percentages if segment >= 0.08
+        # Annotate with percentages if segment >= 0.08 (bigger font for readability)
         heights = {k: df_sec[k].tolist() for k in ["change_hint", "change_non_hint", "no_change"]}
         cum_prev = [0.0]*len(models)
         for key in ["change_hint", "change_non_hint", "no_change"]:
@@ -586,7 +587,16 @@ def _plot_hint_change_stacked(by_cond: Dict[str, pd.DataFrame], outfile: str) ->
             for xi, v in enumerate(vals):
                 if v >= 0.08:
                     y = cum_prev[xi] + v / 2.0
-                    ax.text(xi, y, f"{int(round(v*100))}%", ha="center", va="center", color="white" if key != "no_change" else "black", fontsize=9)
+                    ax.text(
+                        xi,
+                        y,
+                        f"{int(round(v*100))}%",
+                        ha="center",
+                        va="center",
+                        color="white" if key != "no_change" else "black",
+                        fontsize=16,
+                        fontweight="bold",
+                    )
             cum_prev = [a + b for a, b in zip(cum_prev, vals)]
 
     # Unified legend at bottom, single row
@@ -597,10 +607,14 @@ def _plot_hint_change_stacked(by_cond: Dict[str, pd.DataFrame], outfile: str) ->
         Patch(facecolor=colors["no_change"], label="No Change"),
     ]
     fig.legend(handles=legend_elems, loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.02), frameon=False)
-    fig.suptitle("Experiment 3: Hint Adherence — Change Types by Model", y=1.02)
+    fig.suptitle("Experiment 3: Hint Adherence — Change Types by Model", y=1.02, fontsize=16)
     fig.tight_layout(rect=[0, 0.05, 1, 1])
     os.makedirs(os.path.dirname(outfile) or ".", exist_ok=True)
     fig.savefig(outfile, dpi=300, bbox_inches="tight")
+    # Also emit a PNG alongside the requested path for convenience in previews
+    import os as _os
+    root, ext = _os.path.splitext(outfile)
+    fig.savefig(f"{root}.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 

@@ -31,6 +31,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import ast
+import matplotlib as _mpl
 
 from analysis.metrics import (
     compute_accuracy,
@@ -109,11 +110,19 @@ def _plot_accuracy_slopegraph(
         return
     import numpy as _np
     import matplotlib.pyplot as _plt
-    import matplotlib as _mpl
-
-    # Ensure vector-friendly fonts in PDFs for LaTeX inclusion
-    _mpl.rcParams["pdf.fonttype"] = 42
-    _mpl.rcParams["ps.fonttype"] = 42
+    # Ensure vector-friendly fonts in PDFs for LaTeX inclusion and global sizes
+    _mpl.rcParams.update({
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "text.usetex": False,
+        "savefig.bbox": "tight",
+        "figure.autolayout": False,
+        "axes.titlesize": 16,
+        "axes.labelsize": 16,
+        "xtick.labelsize": 14,
+        "ytick.labelsize": 14,
+        "legend.fontsize": 13,
+    })
 
     x = _np.array([0, 1, 2])
     x_labels = ["Unbiased", "Bias→Gold", "Bias→Wrong"]
