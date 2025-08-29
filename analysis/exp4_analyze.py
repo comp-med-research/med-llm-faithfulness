@@ -287,7 +287,7 @@ def _means_by_model(df: pd.DataFrame, metric_cols: List[str]) -> Dict[str, List[
     return series_by_model
 
 
-def _plot_radar(categories: List[str], model_to_vals: Dict[str, List[float]], outfile: str, title: str) -> None:
+def _plot_radar(categories: List[str], model_to_vals: Dict[str, List[float]], outfile: str, title: str, labels: List[str] | None = None) -> None:
     if not categories or not model_to_vals:
         return
     _set_publication_rc()
@@ -311,7 +311,16 @@ def _plot_radar(categories: List[str], model_to_vals: Dict[str, List[float]], ou
 
     # Labels around circle
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(categories)
+    tick_labels = labels if labels is not None else categories
+    ax.set_xticklabels(tick_labels)
+    # Enforce requested font sizes explicitly
+    for lbl in ax.get_xticklabels():
+        lbl.set_fontsize(30)
+    for lbl in ax.get_yticklabels():
+        lbl.set_fontsize(30)
+    # Push tick labels outward for readability
+    ax.tick_params(axis='x', pad=28)
+    ax.tick_params(axis='y', pad=24)
 
     colors = {
         "Claude": "#4C78A8",
@@ -326,8 +335,8 @@ def _plot_radar(categories: List[str], model_to_vals: Dict[str, List[float]], ou
         ax.plot(angles, data, linewidth=2, label=model, color=colors.get(model))
         ax.fill(angles, data, alpha=0.12, color=colors.get(model))
 
-    ax.set_title(title, pad=20)
-    ax.legend(loc="upper right", bbox_to_anchor=(1.2, 1.1))
+    ax.set_title(title, pad=28, fontsize=32)
+    ax.legend(loc="upper right", bbox_to_anchor=(1.6, 1.16), prop={"size": 30})
     outdir = os.path.dirname(outfile) or "."
     os.makedirs(outdir, exist_ok=True)
     fig.savefig(outfile, dpi=300)
@@ -351,9 +360,42 @@ def main() -> None:
         # Radar for doctors: only continuous metrics
         df_doc = pd.read_csv(args.doctors)
         doc_metrics = _continuous_metric_columns(df_doc)
+        # Reorder to avoid overlapping labels: separate key labels around the circle
+        apr_label = "Appropriateness of urgency"
+        comp_label = "Completeness of response"
+        harm_label = None
+        for m in doc_metrics:
+            if m.strip().lower().startswith("potential harm"):
+                harm_label = m
+                break
+        if apr_label in doc_metrics or comp_label in doc_metrics or harm_label in doc_metrics:
+            others = [m for m in doc_metrics if m not in {apr_label, comp_label} and m != harm_label]
+            new_order = []
+            if apr_label in doc_metrics:
+                new_order.append(apr_label)
+            # split others into two halves
+            mid = len(others) // 2
+            first_half = others[:mid]
+            second_half = others[mid:]
+            new_order.extend(first_half)
+            if harm_label:
+                new_order.append(harm_label)
+            new_order.extend(second_half)
+            if comp_label in doc_metrics:
+                new_order.append(comp_label)
+            # Keep any remaining not included (safety)
+            for m in doc_metrics:
+                if m not in new_order:
+                    new_order.append(m)
+            doc_metrics = new_order
         if doc_metrics:
             doc_vals = _means_by_model(df_doc, doc_metrics)
-            _plot_radar(doc_metrics, doc_vals, os.path.join(args.outdir, "fig4a_clinician_radar.pdf"), title="Clinician Ratings (Radar)")
+            # Pretty labels: shorten "Potential harm if followed" if present
+            pretty_labels = [
+                ("Potential harm" if m.strip().lower().startswith("potential harm") else m)
+                for m in doc_metrics
+            ]
+            _plot_radar(doc_metrics, doc_vals, os.path.join(args.outdir, "exp4_radar_clinicians.pdf"), title="Clinician Ratings", labels=pretty_labels)
     if args.laypeople and os.path.exists(args.laypeople):
         _analyze_one(args.laypeople, os.path.join(args.outdir, "laypeople_summary_exp4.csv"))
         _irr_one(args.laypeople, os.path.join(args.outdir, "laypeople_irr_exp4.csv"))
@@ -362,7 +404,7 @@ def main() -> None:
         lay_metrics = _continuous_metric_columns(df_lay)
         if lay_metrics:
             lay_vals = _means_by_model(df_lay, lay_metrics)
-            _plot_radar(lay_metrics, lay_vals, os.path.join(args.outdir, "fig4b_layperson_radar.pdf"), title="Layperson Ratings (Radar)")
+            _plot_radar(lay_metrics, lay_vals, os.path.join(args.outdir, "exp4_radar_laypeople.pdf"), title="Layperson Ratings")
 
     print("Wrote summaries (if inputs existed) to:")
     print(os.path.join(args.outdir, "doctors_summary_exp4.csv"))
