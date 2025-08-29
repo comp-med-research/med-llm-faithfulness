@@ -26,6 +26,7 @@ from typing import List
 
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as _np
 
 
 GLOBAL_METRICS_TO_PLOT = [
@@ -344,6 +345,89 @@ def _plot_per_ablation(metrics_path: str, outdir: str) -> None:
         plt.close(fig)
 
 
+def _write_exp1_summary_table(metrics_paths: List[str], outdir: str) -> None:
+    """Aggregate key Exp1 metrics across models and write CSV and LaTeX tables.
+
+    Collects, per model, the following metrics (with 95% CI if available):
+      - baseline accuracy
+      - macro ablation accuracy
+      - delta accuracy (baseline - macro)
+      - macro damage rate
+      - macro rescue rate
+      - NetFlip (damage - rescue)
+      - causal density mean
+    """
+    cols_spec = [
+        ("baseline", "accuracy", "baseline_accuracy"),
+        ("global", "macro_ablation_accuracy", "macro_accuracy"),
+        ("global", "delta_accuracy", "delta_accuracy"),
+        ("global", "macro_ablation_damage_rate", "damage_rate"),
+        ("global", "macro_ablation_rescue_rate", "rescue_rate"),
+        ("global", "netflip_damage_minus_rescue", "netflip"),
+        ("global", "causal_density_mean", "causal_density_mean"),
+    ]
+
+    rows = []
+    for p in metrics_paths:
+        df = pd.read_csv(p)
+        model_raw = _label_for_csv(p)
+        model = _prettify_model_label(model_raw)
+        rec = {"model": model}
+        for scope, metric, out_name in cols_spec:
+            sel = df[(df["scope"] == scope) & (df["metric"] == metric)]
+            if sel.empty:
+                # leave NaNs
+                rec[out_name] = _np.nan
+                rec[f"{out_name}_ci_low"] = _np.nan
+                rec[f"{out_name}_ci_high"] = _np.nan
+                continue
+            r = sel.iloc[0]
+            v = float(r.get("value", _np.nan))
+            lo = r.get("ci_low", _np.nan)
+            hi = r.get("ci_high", _np.nan)
+            lo = float(lo) if pd.notna(lo) else _np.nan
+            hi = float(hi) if pd.notna(hi) else _np.nan
+            rec[out_name] = v
+            rec[f"{out_name}_ci_low"] = lo
+            rec[f"{out_name}_ci_high"] = hi
+        rows.append(rec)
+
+    if not rows:
+        return
+
+    out_df = pd.DataFrame(rows)
+    out_df = out_df.sort_values("model")
+    os.makedirs(outdir, exist_ok=True)
+    csv_path = os.path.join(outdir, "exp1_summary_table.csv")
+    out_df.to_csv(csv_path, index=False)
+
+    # Also write a compact LaTeX table with value and CI formatted in one cell
+    def _fmt(v: float, lo: float, hi: float) -> str:
+        if pd.isna(v):
+            return ""
+        if pd.isna(lo) or pd.isna(hi):
+            return f"{v:.3f}"
+        return f"{v:.3f} [{lo:.3f}, {hi:.3f}]"
+
+    disp_cols = [
+        ("baseline_accuracy", "Baseline Acc."),
+        ("macro_accuracy", "Macro Acc."),
+        ("delta_accuracy", "Delta Acc."),
+        ("damage_rate", "Damage"),
+        ("rescue_rate", "Rescue"),
+        ("netflip", "NetFlip"),
+        ("causal_density_mean", "Causal Density"),
+    ]
+    disp = pd.DataFrame({"Model": out_df["model"]})
+    for base, header in disp_cols:
+        disp[header] = [
+            _fmt(v, lo, hi)
+            for v, lo, hi in zip(out_df[base], out_df[f"{base}_ci_low"], out_df[f"{base}_ci_high"])
+        ]
+    tex_path = os.path.join(outdir, "exp1_summary_table.tex")
+    with open(tex_path, "w") as f:
+        f.write(disp.to_latex(index=False, escape=True))
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Plot metrics with 95% CIs from metrics CSVs.")
     parser.add_argument("--metrics", nargs="+", required=True, help="Path(s) to metrics CSV(s)")
@@ -384,6 +468,9 @@ def main() -> None:
             subdir = os.path.join(outdir, _label_for_csv(p))
             _ensure_outdir(subdir)
             _plot_per_ablation(p, subdir)
+
+    # Summary table across provided models
+    _write_exp1_summary_table(args.metrics, outdir)
 
 
 if __name__ == "__main__":
