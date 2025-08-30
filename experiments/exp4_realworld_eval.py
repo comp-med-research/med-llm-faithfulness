@@ -94,6 +94,9 @@ def iter_realworld_eval(examples: List[Dict[str, Any]], model_name: str) -> Iter
         prompt = "\n".join(user_parts)
 
         try:
+            # Print prompt for visibility during runs
+            print("\n==== EXP4 PROMPT (user) ====")
+            print(prompt)
             completion = client.generate(prompt)
         except Exception as e:
             completion = f"ERROR: {e}"
