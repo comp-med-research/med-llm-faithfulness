@@ -158,11 +158,11 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 def _pretty_model_label(name: str) -> str:
     low = str(name).lower()
     if "chatgpt" in low:
-        return "ChatGPT"
+        return "ChatGPT-5"
     if "claude" in low:
-        return "Claude"
+        return "Claude 4.1 Opus"
     if "gemini" in low:
-        return "Gemini"
+        return "Gemini Pro 2.5"
     if "llama" in low and ("405" in low or "405b" in low):
         return "Llama-405b"
     return str(name)
@@ -215,7 +215,7 @@ def plot_grouped_accuracy_by_model(metrics_by_model: pd.DataFrame, outfile: str)
     cond_labels = ["Unbiased", "Hint→Gold", "Hint→Wrong"]
     cond_to_label = dict(zip(cond_keys, cond_labels))
     models = []
-    for m in ["Claude", "ChatGPT", "Gemini"]:
+    for m in ["Claude 4.1 Opus", "ChatGPT-5", "Gemini Pro 2.5"]:
         if m in metrics_by_model["model"].unique().tolist():
             models.append(m)
     for m in metrics_by_model["model"].unique().tolist():
@@ -270,6 +270,10 @@ def plot_grouped_accuracy_by_model(metrics_by_model: pd.DataFrame, outfile: str)
     fig.tight_layout()
     os.makedirs(os.path.dirname(outfile) or ".", exist_ok=True)
     fig.savefig(outfile, dpi=300)
+    # Also emit a PNG alongside the requested path for convenience in previews
+    import os as _os
+    root, ext = _os.path.splitext(outfile)
+    fig.savefig(f"{root}.png", dpi=300)
     plt.close(fig)
 
 
@@ -538,7 +542,7 @@ def _plot_hint_change_stacked(by_cond: Dict[str, pd.DataFrame], outfile: str) ->
     # Model order (prefer pretty list)
     def _ordered_models(df_list: List[pd.DataFrame]) -> List[str]:
         seen: List[str] = []
-        preferred = ["Claude", "ChatGPT", "Gemini"]
+        preferred = ["Claude 4.1 Opus", "ChatGPT-5", "Gemini Pro 2.5"]
         for df in df_list:
             if df is None or df.empty:
                 continue

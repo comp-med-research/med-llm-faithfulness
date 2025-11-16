@@ -58,11 +58,11 @@ def _load_mapping(mapping_csv: str) -> pd.DataFrame:
     def _pretty(m: str) -> str:
         low = str(m).lower()
         if "chatgpt" in low:
-            return "ChatGPT"
+            return "ChatGPT-5"
         if "claude" in low:
-            return "Claude"
+            return "Claude 4.1 Opus"
         if "gemini" in low:
-            return "Gemini"
+            return "Gemini Pro 2.5"
         return str(m)
     df["model_display"] = df["model"].apply(_pretty) if "model" in df.columns else pd.NA
     return df

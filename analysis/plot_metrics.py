@@ -109,11 +109,11 @@ def _prettify_model_label(raw: str) -> str:
     """
     low = raw.lower()
     if "chatgpt" in low:
-        return "ChatGPT"
+        return "ChatGPT-5"
     if "claude" in low:
-        return "Claude"
+        return "Claude 4.1 Opus"
     if "gemini" in low:
-        return "Gemini"
+        return "Gemini Pro 2.5"
     if "llama" in low and ("405" in low or "405b" in low):
         return "Llama-405b"
     base = raw.split(".")[0]
@@ -242,6 +242,193 @@ def _plot_causal_density(metrics_paths: List[str], outdir: str) -> None:
     fig.tight_layout()
     out_path = os.path.join(outdir, "exp1_causal_density.png")
     fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+
+
+def _plot_exp1_causal_composite(metrics_paths: List[str], outdir: str) -> None:
+    """Composite figure (2x2 with bottom row spanning) for Experiment 1:
+    - Top-left: Damage, Rescue, NetFlip per model (with 95% CIs; Damage plotted downward)
+    - Top-right: Causal density per model (with 95% CIs)
+    - Bottom (span): Paired-dots baseline vs macro ablation accuracy (with 95% CIs)
+    """
+    import numpy as np
+    from matplotlib import gridspec as _gridspec
+
+    rows_for_dr: List[dict] = []
+    rows_for_cd: List[dict] = []
+    rows_for_acc: List[dict] = []
+
+    for p in metrics_paths:
+        df = pd.read_csv(p)
+        model_raw = _label_for_csv(p)
+        model = _prettify_model_label(model_raw)
+
+        # Global rows for damage/rescue/netflip/causal density
+        g = df[df["scope"] == "global"]
+        if not g.empty:
+            dmg = g[g["metric"] == "macro_ablation_damage_rate"]
+            rsc = g[g["metric"] == "macro_ablation_rescue_rate"]
+            nfl = g[g["metric"] == "netflip_damage_minus_rescue"]
+            cden = g[g["metric"] == "causal_density_mean"]
+
+            if not dmg.empty and not rsc.empty and not nfl.empty:
+                d = dmg.iloc[0]
+                r = rsc.iloc[0]
+                n = nfl.iloc[0]
+                rows_for_dr.append({
+                    "model": model,
+                    "damage": float(d.get("value", np.nan)),
+                    "damage_lo": float(max(0.0, float(d.get("value", np.nan)) - float(d.get("ci_low", np.nan))) if pd.notna(d.get("ci_low", np.nan)) else 0.0),
+                    "damage_hi": float(max(0.0, float(d.get("ci_high", np.nan)) - float(d.get("value", np.nan))) if pd.notna(d.get("ci_high", np.nan)) else 0.0),
+                    "rescue": float(r.get("value", np.nan)),
+                    "rescue_lo": float(max(0.0, float(r.get("value", np.nan)) - float(r.get("ci_low", np.nan))) if pd.notna(r.get("ci_low", np.nan)) else 0.0),
+                    "rescue_hi": float(max(0.0, float(r.get("ci_high", np.nan)) - float(r.get("value", np.nan))) if pd.notna(r.get("ci_high", np.nan)) else 0.0),
+                    "netflip": float(n.get("value", np.nan)),
+                    "netflip_lo": float(max(0.0, float(n.get("value", np.nan)) - float(n.get("ci_low", np.nan))) if pd.notna(n.get("ci_low", np.nan)) else 0.0),
+                    "netflip_hi": float(max(0.0, float(n.get("ci_high", np.nan)) - float(n.get("value", np.nan))) if pd.notna(n.get("ci_high", np.nan)) else 0.0),
+                })
+            if not cden.empty:
+                c = cden.iloc[0]
+                rows_for_cd.append({
+                    "model": model,
+                    "value": float(c.get("value", np.nan)),
+                    "lo": float(max(0.0, float(c.get("value", np.nan)) - float(c.get("ci_low", np.nan))) if pd.notna(c.get("ci_low", np.nan)) else 0.0),
+                    "hi": float(max(0.0, float(c.get("ci_high", np.nan)) - float(c.get("value", np.nan))) if pd.notna(c.get("ci_high", np.nan)) else 0.0),
+                })
+
+        # Baseline vs macro accuracy
+        base = df[(df["scope"] == "baseline") & (df["metric"] == "accuracy")]
+        macr = df[(df["scope"] == "global") & (df["metric"] == "macro_ablation_accuracy")]
+        if not base.empty and not macr.empty:
+            b = base.iloc[0]
+            m = macr.iloc[0]
+            rows_for_acc.append({
+                "model": model,
+                "baseline": float(b.get("value", np.nan)),
+                "baseline_lo": float(max(0.0, float(b.get("value", np.nan)) - float(b.get("ci_low", np.nan))) if pd.notna(b.get("ci_low", np.nan)) else 0.0),
+                "baseline_hi": float(max(0.0, float(b.get("ci_high", np.nan)) - float(b.get("value", np.nan))) if pd.notna(b.get("ci_high", np.nan)) else 0.0),
+                "macro": float(m.get("value", np.nan)),
+                "macro_lo": float(max(0.0, float(m.get("value", np.nan)) - float(m.get("ci_low", np.nan))) if pd.notna(m.get("ci_low", np.nan)) else 0.0),
+                "macro_hi": float(max(0.0, float(m.get("ci_high", np.nan)) - float(m.get("value", np.nan))) if pd.notna(m.get("ci_high", np.nan)) else 0.0),
+            })
+
+    if not rows_for_dr and not rows_for_cd and not rows_for_acc:
+        return
+
+    # Keep consistent model order across panels
+    models = []
+    for pref in ["Claude 4.1 Opus", "ChatGPT-5", "Gemini Pro 2.5"]:
+        if any(r["model"] == pref for r in rows_for_dr + rows_for_cd + rows_for_acc):
+            models.append(pref)
+    for r in rows_for_dr + rows_for_cd + rows_for_acc:
+        if r["model"] not in models:
+            models.append(r["model"])
+
+    fig = plt.figure(figsize=(12, 8))
+    gs = _gridspec.GridSpec(2, 2, height_ratios=[1.0, 1.2], hspace=0.35, wspace=0.25)
+    ax_dr = fig.add_subplot(gs[0, 0])
+    ax_cd = fig.add_subplot(gs[0, 1])
+    ax_pair = fig.add_subplot(gs[1, :])
+
+    # Top-left: Damage/Rescue/NetFlip
+    if rows_for_dr:
+        rows_for_dr_sorted = [next(r for r in rows_for_dr if r["model"] == m) for m in models if any(rr["model"] == m for rr in rows_for_dr)]
+        x = np.arange(len(rows_for_dr_sorted))
+        width = 0.22
+        damage = -np.array([r["damage"] for r in rows_for_dr_sorted], dtype=float)
+        damage_err = [
+            np.array([r["damage_hi"] for r in rows_for_dr_sorted], dtype=float),
+            np.array([r["damage_lo"] for r in rows_for_dr_sorted], dtype=float),
+        ]
+        rescue = np.array([r["rescue"] for r in rows_for_dr_sorted], dtype=float)
+        rescue_err = [
+            np.array([r["rescue_lo"] for r in rows_for_dr_sorted], dtype=float),
+            np.array([r["rescue_hi"] for r in rows_for_dr_sorted], dtype=float),
+        ]
+        # Display NetFlip in the same direction as the larger of (rescue, damage).
+        # Our stored metric is (damage - rescue); flip sign so positive means rescue > damage.
+        netflip = -np.array([r["netflip"] for r in rows_for_dr_sorted], dtype=float)
+        netflip_err = [
+            np.array([r["netflip_lo"] for r in rows_for_dr_sorted], dtype=float),
+            np.array([r["netflip_hi"] for r in rows_for_dr_sorted], dtype=float),
+        ]
+        ax_dr.bar(x - width, damage, width=width, yerr=damage_err, capsize=4, color="#4C78A8", label="Damage")
+        ax_dr.bar(x, rescue, width=width, yerr=rescue_err, capsize=4, color="#F58518", label="Rescue")
+        ax_dr.bar(x + width, netflip, width=width, yerr=netflip_err, capsize=4, color="#54A24B", label="NetFlip")
+        ax_dr.set_xticks(list(x))
+        ax_dr.set_xticklabels([r["model"] for r in rows_for_dr_sorted], rotation=0)
+        ymin = float(min((damage - damage_err[0]).min(), (rescue - rescue_err[0]).min(), (netflip - netflip_err[0]).min()))
+        ymax = float(max((damage + damage_err[1]).max(), (rescue + rescue_err[1]).max(), (netflip + netflip_err[1]).max()))
+        pad = max(0.02, 0.05 * (ymax - ymin if ymax > ymin else 1.0))
+        ax_dr.set_ylim(ymin - pad, ymax + pad)
+        ax_dr.set_ylabel("Rate")
+        ax_dr.set_title("Damage / Rescue / NetFlip")
+        ax_dr.grid(axis="y", linestyle=":", alpha=0.5)
+        # Smaller legend in upper-left to avoid overlapping data
+        ax_dr.legend(loc="upper left", fontsize=11, frameon=False, borderaxespad=0.2, handlelength=1.2)
+
+    # Top-right: Causal density
+    if rows_for_cd:
+        rows_for_cd_sorted = [next(r for r in rows_for_cd if r["model"] == m) for m in models if any(rr["model"] == m for rr in rows_for_cd)]
+        xc = np.arange(len(rows_for_cd_sorted))
+        vals = np.array([r["value"] for r in rows_for_cd_sorted], dtype=float)
+        yerr = [
+            np.array([r["lo"] for r in rows_for_cd_sorted], dtype=float),
+            np.array([r["hi"] for r in rows_for_cd_sorted], dtype=float),
+        ]
+        ax_cd.bar(xc, vals, yerr=yerr, capsize=4, color="#F58518", edgecolor="#C66A12")
+        ax_cd.set_xticks(list(xc))
+        ax_cd.set_xticklabels([r["model"] for r in rows_for_cd_sorted], rotation=0)
+        ymin = float((vals - yerr[0]).min())
+        ymax = float((vals + yerr[1]).max())
+        pad = max(0.01, 0.1 * (ymax - ymin if ymax > ymin else 1.0))
+        ax_cd.set_ylim(max(0.0, ymin - pad), ymax + pad)
+        # Clarify via title; keep y-axis as the metric name
+        ax_cd.set_ylabel("Rate")
+        ax_cd.set_title("Causal Density")
+        ax_cd.grid(axis="y", linestyle=":", alpha=0.5)
+
+    # Bottom span: Paired dots accuracy
+    if rows_for_acc:
+        rows_for_acc_sorted = [next(r for r in rows_for_acc if r["model"] == m) for m in models if any(rr["model"] == m for rr in rows_for_acc)]
+        baseline = np.array([r["baseline"] for r in rows_for_acc_sorted], dtype=float)
+        baseline_err = [
+            np.array([r["baseline_lo"] for r in rows_for_acc_sorted], dtype=float),
+            np.array([r["baseline_hi"] for r in rows_for_acc_sorted], dtype=float),
+        ]
+        macro = np.array([r["macro"] for r in rows_for_acc_sorted], dtype=float)
+        macro_err = [
+            np.array([r["macro_lo"] for r in rows_for_acc_sorted], dtype=float),
+            np.array([r["macro_hi"] for r in rows_for_acc_sorted], dtype=float),
+        ]
+        x = np.arange(len(rows_for_acc_sorted))
+        offset = 0.18
+        ax_pair.errorbar(x - offset, baseline, yerr=baseline_err, fmt="x", color="#4C78A8", capsize=3, markersize=8, label="Baseline")
+        ax_pair.errorbar(x + offset, macro, yerr=macro_err, fmt="x", color="#F58518", capsize=3, markersize=8, label="Macro Ablation")
+        for xi, y0, y1 in zip(x, baseline, macro):
+            ax_pair.plot([xi - offset, xi + offset], [y0, y1], color="#B0B0B0", linewidth=1.5, alpha=0.9)
+        ax_pair.set_xticks(list(x))
+        ax_pair.set_xticklabels([r["model"] for r in rows_for_acc_sorted], rotation=0)
+        base_low = baseline - baseline_err[0]
+        base_high = baseline + baseline_err[1]
+        macro_low = macro - macro_err[0]
+        macro_high = macro + macro_err[1]
+        ymin = float(min(base_low.min(), macro_low.min()))
+        ymax = float(max(base_high.max(), macro_high.max()))
+        pad = max(0.02, 0.05 * (ymax - ymin if ymax > ymin else 1.0))
+        ax_pair.set_ylim(ymin - pad, ymax + pad)
+        ax_pair.set_ylabel("Accuracy")
+        ax_pair.set_title("Baseline vs Macro Ablation Accuracy")
+        ax_pair.grid(axis="y", linestyle=":", alpha=0.5)
+        ax_pair.legend(loc="upper left")
+
+    fig.suptitle("Experiment 1: Causal Metrics and Accuracy", y=0.99, fontsize=16)
+    fig.tight_layout(rect=[0.02, 0.02, 0.98, 0.96])
+    os.makedirs(outdir, exist_ok=True)
+    out_pdf = os.path.join(outdir, "exp1_causal_composite.pdf")
+    out_png = os.path.join(outdir, "exp1_causal_composite.png")
+    fig.savefig(out_pdf, dpi=300, bbox_inches="tight")
+    fig.savefig(out_png, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 def _plot_damage_rescue_netflip_grouped(metrics_paths: List[str], outdir: str) -> None:
@@ -490,6 +677,9 @@ def main() -> None:
 
     # Summary table across provided models
     _write_exp1_summary_table(args.metrics, outdir)
+
+    # Composite causal metrics + accuracy figure
+    _plot_exp1_causal_composite(args.metrics, outdir)
 
 
 if __name__ == "__main__":

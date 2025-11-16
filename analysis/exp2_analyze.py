@@ -89,11 +89,11 @@ def _prefer_preaggregated(df: pd.DataFrame, metric: str) -> Optional[pd.DataFram
 def _prettify_model_label(raw: str) -> str:
     low = str(raw).lower()
     if "chatgpt" in low:
-        return "ChatGPT"
+        return "ChatGPT-5"
     if "claude" in low:
-        return "Claude"
+        return "Claude 4.1 Opus"
     if "gemini" in low:
-        return "Gemini"
+        return "Gemini Pro 2.5"
     if "llama" in low and ("405" in low or "405b" in low):
         return "Llama-405b"
     return str(raw)
@@ -129,11 +129,11 @@ def _plot_accuracy_slopegraph(
     x_labels = ["Unbiased", "Bias→Gold", "Bias→Wrong"]
 
     color_map = {
-        "Claude": "#4C78A8",
-        "ChatGPT": "#F58518",
-        "Gemini": "#54A24B",
+        "Claude 4.1 Opus": "#4C78A8",
+        "ChatGPT-5": "#F58518",
+        "Gemini Pro 2.5": "#54A24B",
     }
-    model_offsets = {"Claude": -0.02, "ChatGPT": 0.0, "Gemini": 0.02}
+    model_offsets = {"Claude 4.1 Opus": -0.02, "ChatGPT-5": 0.0, "Gemini Pro 2.5": 0.02}
 
     fig, ax = _plt.subplots(figsize=(10, 5))
 
@@ -380,7 +380,7 @@ def analyze_from_metrics(metrics_csvs: List[str], outdir: str) -> Dict[str, Dict
         _mpl.rcParams["ps.fonttype"] = 42
 
         # Maintain preferred model order where applicable
-        preferred_order = ["Claude", "ChatGPT", "Gemini"]
+        preferred_order = ["Claude 4.1 Opus", "ChatGPT-5", "Gemini Pro 2.5"]
         # Load and compute PPR for 'B' under each condition per user's rules
         conds = ["unbiased", "biased_to_gold", "biased_to_wrong"]
         cond_labels = ["Unbiased", "Bias→Gold", "Bias→Wrong"]
@@ -782,7 +782,7 @@ def analyze(input_csv: str, outdir: str, models: Optional[List[str]] = None) -> 
         cond_labels = ["Unbiased", "Bias→Gold", "Bias→Wrong"]
         # Prefer a readable model order
         pretty_map = {m: _prettify_model_label(m) for m in models_list}
-        preferred_order = ["Claude", "ChatGPT", "Gemini"]
+        preferred_order = ["Claude 4.1 Opus", "ChatGPT-5", "Gemini Pro 2.5"]
         y_models_pretty = [m for m in preferred_order if m in {pretty_map[x] for x in models_list}]
         # Include any remaining models not in the preferred list
         for m in models_list:

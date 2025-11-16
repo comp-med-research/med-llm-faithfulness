@@ -85,8 +85,16 @@ def plot_model_panel(ax: plt.Axes, row: pd.Series) -> None:
 
 
 def make_figure(df: pd.DataFrame, out_png: str, out_pdf: str) -> None:
-	models = ["Claude", "ChatGPT", "Gemini"]
-	df = df.set_index("model").loc[models].reset_index()
+	models = ["Claude 4.1 Opus", "ChatGPT-5", "Gemini Pro 2.5"]
+	# Normalize legacy model labels in merged CSVs
+	df = df.copy()
+	if "model" in df.columns:
+		df["model"] = df["model"].replace({
+			"Claude": "Claude 4.1 Opus",
+			"ChatGPT": "ChatGPT-5",
+			"Gemini": "Gemini Pro 2.5",
+		})
+	df = df.set_index("model").reindex(models).dropna(how="all").reset_index()
 
 	# Determine global y-limits for consistent scaling across panels
 	all_values = pd.concat(

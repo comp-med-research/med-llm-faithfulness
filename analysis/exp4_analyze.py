@@ -8,8 +8,8 @@ Inputs (mapped CSVs produced by analysis.exp4_map):
 Outputs:
   - doctors_summary_exp4.csv
   - laypeople_summary_exp4.csv
-  - doctors_irr_exp4.csv (Cohen's kappa for binary, ICC(2,1) for numeric)
-  - laypeople_irr_exp4.csv (Cohen's kappa for binary, ICC(2,1) for numeric)
+  - doctors_irr_exp4.csv (ICC(2,1) for numeric)
+  - laypeople_irr_exp4.csv (ICC(2,1) for numeric)
 
 For each cohort separately, and for each model, compute per-metric summaries:
   - Numeric metrics (e.g., 1–5 Likert): mean with 95% CI (normal approx), n
@@ -121,27 +121,6 @@ def _summarize_by_model(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _cohen_kappa_binary(y1: np.ndarray, y2: np.ndarray) -> float:
-    """Cohen's kappa for two binary rater vectors with values in {0,1}."""
-    mask = ~(np.isnan(y1) | np.isnan(y2))
-    a = y1[mask]
-    b = y2[mask]
-    if a.size == 0:
-        return float("nan")
-    # Observed agreement
-    po = float((a == b).mean())
-    # Expected agreement
-    p1_1 = float((a == 1).mean())
-    p1_0 = 1.0 - p1_1
-    p2_1 = float((b == 1).mean())
-    p2_0 = 1.0 - p2_1
-    pe = p1_1 * p2_1 + p1_0 * p2_0
-    denom = (1.0 - pe)
-    if denom == 0.0:
-        return float("nan")
-    return (po - pe) / denom
-
-
 def _icc_2_1(mat: np.ndarray) -> float:
     """ICC(2,1): two-way random effects, absolute agreement, single rater.
 
@@ -210,7 +189,6 @@ def _bootstrap_ci(stat_fn, mat: np.ndarray, num_bootstrap: int = 5000, alpha: fl
 def _compute_irr_by_model(df: pd.DataFrame) -> pd.DataFrame:
     """Compute IRR per model and metric.
 
-    - Binary metrics: average pairwise Cohen's kappa across raters
     - Numeric metrics: ICC(2,1) using items=case_num, raters=respondent_id
     """
     rows: List[Dict] = []
@@ -222,31 +200,7 @@ def _compute_irr_by_model(df: pd.DataFrame) -> pd.DataFrame:
         raters = [str(x) for x in sorted(sub["respondent_id"].astype(str).unique().tolist())]
         for metric in metric_cols:
             mtype, series_type = _classify_metric_series(sub[metric])
-            if mtype == "binary":
-                # Build aligned series per rater by case
-                pair_kappas: List[float] = []
-                # pivot by case_num x respondent_id
-                pivot = sub.pivot_table(index="case_num", columns="respondent_id", values=metric, aggfunc="first")
-                pivot = pivot.reindex(sorted(pivot.index))
-                cols = list(pivot.columns)
-                # compute pairwise kappa
-                for i in range(len(cols)):
-                    for j in range(i + 1, len(cols)):
-                        a = pd.to_numeric(pivot[cols[i]], errors="coerce").to_numpy(dtype=float)
-                        b = pd.to_numeric(pivot[cols[j]], errors="coerce").to_numpy(dtype=float)
-                        kappa = _cohen_kappa_binary(a, b)
-                        if not np.isnan(kappa):
-                            pair_kappas.append(float(kappa))
-                val = float(np.mean(pair_kappas)) if pair_kappas else float("nan")
-                rows.append({
-                    "model": model,
-                    "metric": metric,
-                    "irr_type": "cohen_kappa_avg",
-                    "value": val,
-                    "n_raters": len(cols),
-                    "n_items": int(pivot.shape[0]),
-                })
-            else:
+            if mtype != "binary":
                 # Numeric: ICC(2,1)
                 pivot = sub.pivot_table(index="case_num", columns="respondent_id", values=metric, aggfunc="first")
                 # Require complete cases across raters; cast entire DataFrame to numeric
@@ -324,65 +278,6 @@ def _compute_overall_icc(df: pd.DataFrame, item_mode: str = "model_case") -> Dic
         "icc2k_ci_high": float(icc2_k_hi),
     }
 
-def _overall_binary_kappa_with_ci(df: pd.DataFrame) -> Dict[str, float]:
-    """Average pairwise Cohen's kappa across all model×case×binary-metric items
-    with bootstrap 95% CI (resampling items).
-    """
-    # Collect binary metric columns
-    bin_metrics: List[str] = []
-    for c in _list_metric_columns(df):
-        mt, _ = _classify_metric_series(df[c])
-        if mt == "binary":
-            bin_metrics.append(c)
-    if not bin_metrics:
-        return {"value": float("nan"), "n_raters": 0, "n_items": 0, "ci_low": float("nan"), "ci_high": float("nan")}
-    frames: List[pd.DataFrame] = []
-    for m in bin_metrics:
-        sub = df[["model", "case_num", "respondent_id", m]].copy()
-        sub = sub.rename(columns={m: "value"})
-        sub["metric"] = m
-        frames.append(sub)
-    work = pd.concat(frames, ignore_index=True)
-    pivot = work.pivot_table(index=["model", "case_num", "metric"], columns="respondent_id", values="value", aggfunc="first")
-    pivot = pivot.apply(pd.to_numeric, errors="coerce")
-    cols = list(pivot.columns)
-    if len(cols) < 2 or pivot.shape[0] == 0:
-        return {"value": float("nan"), "n_raters": int(len(cols)), "n_items": int(pivot.shape[0]), "ci_low": float("nan"), "ci_high": float("nan")}
-
-    def _avg_pairwise_kappa(mat_items_by_rater: np.ndarray) -> float:
-        # mat shape: items × raters, may contain NaNs
-        # Compute average pairwise kappa using available items per pair
-        vals: List[float] = []
-        for i in range(mat_items_by_rater.shape[1]):
-            for j in range(i + 1, mat_items_by_rater.shape[1]):
-                a = mat_items_by_rater[:, i]
-                b = mat_items_by_rater[:, j]
-                k = _cohen_kappa_binary(a, b)
-                if not np.isnan(k):
-                    vals.append(float(k))
-        return float(np.mean(vals)) if vals else float("nan")
-
-    mat = pivot.to_numpy(dtype=float)
-    val = _avg_pairwise_kappa(mat)
-    # Bootstrap by resampling items (rows)
-    if mat.shape[0] >= 2:
-        rng = np.random.default_rng(0)
-        n = mat.shape[0]
-        samples: List[float] = []
-        for _ in range(5000):
-            idx = rng.integers(0, n, size=n)
-            samples.append(_avg_pairwise_kappa(mat[idx, :]))
-        samples = [s for s in samples if not np.isnan(s)]
-        if samples:
-            lo = float(np.quantile(samples, 0.025))
-            hi = float(np.quantile(samples, 0.975))
-        else:
-            lo, hi = float("nan"), float("nan")
-    else:
-        lo, hi = float("nan"), float("nan")
-
-    return {"value": float(val), "n_raters": int(len(cols)), "n_items": int(pivot.shape[0]), "ci_low": lo, "ci_high": hi}
-
 def _analyze_one(input_csv: str, out_csv: str) -> None:
     if not input_csv or not os.path.exists(input_csv):
         return
@@ -429,7 +324,7 @@ def _continuous_metric_columns(df: pd.DataFrame) -> List[str]:
 
 
 def _means_by_model(df: pd.DataFrame, metric_cols: List[str]) -> Dict[str, List[float]]:
-    models = [m for m in ["Claude", "ChatGPT", "Gemini"] if m in df["model"].unique().tolist()]
+    models = [m for m in ["Claude 4.1 Opus", "ChatGPT-5", "Gemini Pro 2.5"] if m in df["model"].unique().tolist()]
     for m in df["model"].unique().tolist():
         if m not in models:
             models.append(m)
@@ -444,19 +339,30 @@ def _means_by_model(df: pd.DataFrame, metric_cols: List[str]) -> Dict[str, List[
     return series_by_model
 
 
-def _plot_radar(categories: List[str], model_to_vals: Dict[str, List[float]], outfile: str, title: str, labels: List[str] | None = None) -> None:
+def _plot_radar(
+    categories: List[str],
+    model_to_vals: Dict[str, List[float]],
+    outfile: str,
+    title: str,
+    labels: List[str] | None = None,
+) -> None:
     if not categories or not model_to_vals:
         return
     _set_publication_rc()
+    import textwrap as _tw
     # Angles
     n = len(categories)
     angles = np.linspace(0, 2 * np.pi, n, endpoint=False).tolist()
     angles += angles[:1]
 
-    fig = plt.figure(figsize=(8, 8))
+    # Larger canvas and reserved right margin for legend
+    fig = plt.figure(figsize=(10.4, 10.4))
     ax = plt.subplot(111, polar=True)
     ax.set_theta_offset(np.pi / 2)
     ax.set_theta_direction(-1)
+    # Leave extra space on the right for legend, and a bit on bottom/top for labels
+    # Reserve generous right margin for legend
+    fig.subplots_adjust(left=0.13, right=0.90, top=0.88, bottom=0.12)
 
     # Radial grid: try to infer scale from data; default 1..5
     all_vals = np.array([v for vals in model_to_vals.values() for v in vals if not np.isnan(v)])
@@ -466,23 +372,31 @@ def _plot_radar(categories: List[str], model_to_vals: Dict[str, List[float]], ou
     ax.set_rlabel_position(0)
     ax.set_ylim(0, rmax)
 
-    # Labels around circle
+    # Labels around circle (wrap long labels; keep horizontal for readability)
     ax.set_xticks(angles[:-1])
-    tick_labels = labels if labels is not None else categories
+    raw_labels = labels if labels is not None else categories
+    def _wrap(s: str, width: int = 18) -> str:
+        # Prefer explicit wrap for known long labels
+        s2 = s.replace("Completeness of response", "Completeness\nof response\n")
+        s2 = s2.replace("Logical consistency", "Logical\nconsistency\n")
+        # Generic wrap as a fallback
+        return "\n".join(_tw.wrap(s2, width=width)) if "\n" not in s2 else s2
+    tick_labels = [_wrap(str(s)) for s in raw_labels]
     ax.set_xticklabels(tick_labels)
     # Enforce requested font sizes explicitly
     for lbl in ax.get_xticklabels():
         lbl.set_fontsize(30)
     for lbl in ax.get_yticklabels():
         lbl.set_fontsize(30)
-    # Push tick labels outward for readability
-    ax.tick_params(axis='x', pad=28)
+    # Push tick labels outward for readability (less pad with multiline)
+    # Push labels farther away from the circle to avoid overlap
+    ax.tick_params(axis='x', pad=85)
     ax.tick_params(axis='y', pad=24)
 
     colors = {
-        "Claude": "#4C78A8",
-        "ChatGPT": "#F58518",
-        "Gemini": "#54A24B",
+        "Claude 4.1 Opus": "#4C78A8",
+        "ChatGPT-5": "#F58518",
+        "Gemini Pro 2.5": "#54A24B",
     }
 
     for model, vals in model_to_vals.items():
@@ -492,8 +406,10 @@ def _plot_radar(categories: List[str], model_to_vals: Dict[str, List[float]], ou
         ax.plot(angles, data, linewidth=2, label=model, color=colors.get(model))
         ax.fill(angles, data, alpha=0.12, color=colors.get(model))
 
-    ax.set_title(title, pad=28, fontsize=32)
-    ax.legend(loc="upper right", bbox_to_anchor=(1.6, 1.16), prop={"size": 30})
+    ax.set_title(title, pad=32, fontsize=32)
+    # Place legend at the very top-right (tight to top)
+    ax.legend(loc="upper right", bbox_to_anchor=(1.5, 1.25), prop={"size":33}, frameon=False)
+    # No per-label overrides; spacing is handled via tick_params and layout
     outdir = os.path.dirname(outfile) or "."
     os.makedirs(outdir, exist_ok=True)
     fig.savefig(outfile, dpi=300)
@@ -552,22 +468,40 @@ def _plot_correlations_by_metric(
     for lmet in lay_metrics:
         # Grid layout for doctor metrics
         n = len(doc_metrics)
-        cols = 3 if n >= 3 else n
-        rows = int(_math.ceil(n / cols))
+        # Use a 3×2-style grid (rows×cols) with the last (bottom-right) cell reserved for a legend.
+        # Compute rows based on n plots + 1 legend cell.
+        cols = 2
+        rows = int(_math.ceil((n + 1) / cols))
         fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4.2 * rows))
         if not isinstance(axes, np.ndarray):
             axes = np.array([axes])
         axes = axes.reshape(rows, cols)
 
+        # Reserve bottom-right as a legend pane the same size as a subplot
+        legend_ax = axes[rows - 1, cols - 1]
+        legend_ax.axis("off")
+        from matplotlib.lines import Line2D as _Line2D
+        _legend_handles = [
+            _Line2D([0], [0], marker='o', color='w', markerfacecolor="#4C78A8", label="Claude 4.1 Opus", markersize=25),
+            _Line2D([0], [0], marker='o', color='w', markerfacecolor="#F58518", label="ChatGPT-5", markersize=25),
+            _Line2D([0], [0], marker='o', color='w', markerfacecolor="#54A24B", label="Gemini Pro 2.5", markersize=25),
+        ]
+        legend_ax.legend(handles=_legend_handles, loc="center", frameon=False, fontsize=25)
+
         for idx, dmet in enumerate(doc_metrics):
-            r = idx // cols
-            c = idx % cols
+            # Map metrics into grid; last cell is reserved for legend
+            cell = idx
+            r = cell // cols
+            c = cell % cols
             ax = axes[r, c]
             # Columns may or may not have suffixes depending on overlap
             dcol = dmet + "_doc" if (dmet + "_doc") in merged.columns else dmet
             lcol = lmet + "_lay" if (lmet + "_lay") in merged.columns else lmet
             if dcol not in merged.columns or lcol not in merged.columns:
-                ax.set_visible(False)
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+                ax.set_xlabel(dmet)
+                ax.set_ylabel(lmet)
+                ax.grid(True, linestyle=":", alpha=0.4)
                 continue
             x = pd.to_numeric(merged[dcol], errors="coerce")
             y = pd.to_numeric(merged[lcol], errors="coerce")
@@ -575,11 +509,14 @@ def _plot_correlations_by_metric(
             xv = x[mask].to_numpy(dtype=float)
             yv = y[mask].to_numpy(dtype=float)
             if xv.size == 0:
-                ax.set_visible(False)
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+                ax.set_xlabel(dmet)
+                ax.set_ylabel(lmet)
+                ax.grid(True, linestyle=":", alpha=0.4)
                 continue
             # Per-model scatter and fits
-            colors = {"Claude": "#4C78A8", "ChatGPT": "#F58518", "Gemini": "#54A24B"}
-            models_present = [m for m in ["Claude", "ChatGPT", "Gemini"] if m in merged["model"].unique().tolist()]
+            colors = {"Claude 4.1 Opus": "#4C78A8", "ChatGPT-5": "#F58518", "Gemini Pro 2.5": "#54A24B"}
+            models_present = [m for m in ["Claude 4.1 Opus", "ChatGPT-5", "Gemini Pro 2.5"] if m in merged["model"].unique().tolist()]
             legends = []
             for m in models_present:
                 sub = merged[merged["model"] == m]
@@ -620,21 +557,23 @@ def _plot_correlations_by_metric(
                 "p_value": float(p_all),
             })
 
-            ax.set_title(dmet)
+            # Remove per-panel title; keep x-axis label
             ax.set_xlabel(dmet)
             ax.set_ylabel(lmet)
             ax.grid(True, linestyle=":", alpha=0.4)
-            if legends:
-                ax.legend(fontsize=9, loc="best")
+            # No per-axes legends; legend is rendered in the [0,0] pane
 
-        # Hide any leftover axes
-        for j in range(n, rows * cols):
-            r = j // cols
-            c = j % cols
-            axes[r, c].set_visible(False)
+        # Hide any leftover axes after placing n plots + 1 legend cell
+        used = n + 1
+        total = rows * cols
+        if used < total:
+            for j in range(used, total):
+                rr = j // cols
+                cc = j % cols
+                axes[rr, cc].set_visible(False)
 
-        fig.suptitle(f"Correlation: Layperson {lmet} vs Clinician metrics", y=1.02, fontsize=16)
-        fig.tight_layout()
+        fig.suptitle(f"Correlation: Layperson {lmet} vs Clinician metrics", y=0.98, fontsize=16)
+        fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])
         os.makedirs(outdir, exist_ok=True)
         base = os.path.join(outdir, f"exp4_corr_{lmet.replace(' ', '_').lower()}")
         fig.savefig(base + ".pdf", dpi=300, bbox_inches="tight")
@@ -727,11 +666,7 @@ def main() -> None:
                 _doc_metrics_for_corr = list(doc_metrics)
             except Exception as _e:
                 print(f"[exp4] Warning: clinician per-item means failed: {_e}")
-        # Overall binary agreement with 95% CI
-        overall_doc_bin = _overall_binary_kappa_with_ci(df_doc)
-        pd.DataFrame([{**overall_doc_bin, "group": "doctors", "irr_type": "cohen_kappa_overall_binary"}]).to_csv(
-            os.path.join(args.outdir, "doctors_overall_binary_kappa_exp4.csv"), index=False
-        )
+        # Skip overall binary agreement (Cohen's kappa) due to low positives
     if args.laypeople and os.path.exists(args.laypeople):
         _analyze_one(args.laypeople, os.path.join(args.outdir, "laypeople_summary_exp4.csv"))
         _irr_one(args.laypeople, os.path.join(args.outdir, "laypeople_irr_exp4.csv"))
@@ -757,7 +692,12 @@ def main() -> None:
         lay_metrics = _continuous_metric_columns(df_lay)
         if lay_metrics:
             lay_vals = _means_by_model(df_lay, lay_metrics)
-            _plot_radar(lay_metrics, lay_vals, os.path.join(args.outdir, "exp4_radar_laypeople.pdf"), title="Layperson Ratings")
+            _plot_radar(
+                lay_metrics,
+                lay_vals,
+                os.path.join(args.outdir, "exp4_radar_laypeople.pdf"),
+                title="Layperson Ratings",
+            )
             # Correlations between clinician and layperson per-item means
             try:
                 if not doc_means_df.empty:
@@ -774,11 +714,7 @@ def main() -> None:
                     )
             except Exception as _e:
                 print(f"[exp4] Warning: correlation plotting failed: {_e}")
-        # Overall binary agreement with 95% CI (if any binary metrics exist)
-        overall_lay_bin = _overall_binary_kappa_with_ci(df_lay)
-        pd.DataFrame([{**overall_lay_bin, "group": "laypeople", "irr_type": "cohen_kappa_overall_binary"}]).to_csv(
-            os.path.join(args.outdir, "laypeople_overall_binary_kappa_exp4.csv"), index=False
-        )
+        # Skip overall binary agreement (Cohen's kappa) due to low positives
 
     print("Wrote summaries (if inputs existed) to:")
     print(os.path.join(args.outdir, "doctors_summary_exp4.csv"))
@@ -793,8 +729,6 @@ def main() -> None:
     print(os.path.join(args.outdir, "laypeople_overall_icc_metric_items_exp4.csv"))
     print(os.path.join(args.outdir, "doctors_overall_icc2k_metric_items_exp4.csv"))
     print(os.path.join(args.outdir, "laypeople_overall_icc2k_metric_items_exp4.csv"))
-    print(os.path.join(args.outdir, "doctors_overall_binary_kappa_exp4.csv"))
-    print(os.path.join(args.outdir, "laypeople_overall_binary_kappa_exp4.csv"))
     print(os.path.join(args.outdir, "doctors_per_item_means_exp4.csv"))
     print(os.path.join(args.outdir, "laypeople_per_item_means_exp4.csv"))
 
