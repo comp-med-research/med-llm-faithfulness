@@ -580,6 +580,90 @@ def _plot_correlations_by_metric(
         fig.savefig(base + ".png", dpi=300, bbox_inches="tight")
         plt.close(fig)
 
+        # Landscape version (2 rows × 3 cols) with legend in bottom-right cell
+        cols_ls = 3
+        rows_ls = int(_math.ceil((n + 1) / cols_ls))
+        fig2, axes2 = plt.subplots(rows_ls, cols_ls, figsize=(6.2 * cols_ls, 3.8 * rows_ls))
+        if not isinstance(axes2, np.ndarray):
+            axes2 = np.array([axes2])
+        axes2 = axes2.reshape(rows_ls, cols_ls)
+
+        legend_ax2 = axes2[rows_ls - 1, cols_ls - 1]
+        legend_ax2.axis("off")
+        from matplotlib.lines import Line2D as _Line2D
+        _legend_handles2 = [
+            _Line2D([0], [0], marker='o', color='w', markerfacecolor="#4C78A8", label="Claude 4.1 Opus", markersize=25),
+            _Line2D([0], [0], marker='o', color='w', markerfacecolor="#F58518", label="ChatGPT-5", markersize=25),
+            _Line2D([0], [0], marker='o', color='w', markerfacecolor="#54A24B", label="Gemini Pro 2.5", markersize=25),
+        ]
+        legend_ax2.legend(handles=_legend_handles2, loc="center", frameon=False, fontsize=25)
+
+        # positions excluding legend cell
+        plot_positions_ls = [(rr, cc) for rr in range(rows_ls) for cc in range(cols_ls) if not (rr == rows_ls - 1 and cc == cols_ls - 1)]
+
+        for idx, dmet in enumerate(doc_metrics):
+            if idx >= len(plot_positions_ls):
+                break
+            rr, cc = plot_positions_ls[idx]
+            ax2 = axes2[rr, cc]
+            dcol = dmet + "_doc" if (dmet + "_doc") in merged.columns else dmet
+            lcol = lmet + "_lay" if (lmet + "_lay") in merged.columns else lmet
+            if dcol not in merged.columns or lcol not in merged.columns:
+                ax2.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax2.transAxes)
+                ax2.set_xlabel(dmet)
+                ax2.set_ylabel(lmet)
+                ax2.grid(True, linestyle=":", alpha=0.4)
+                continue
+            x = pd.to_numeric(merged[dcol], errors="coerce")
+            y = pd.to_numeric(merged[lcol], errors="coerce")
+            mask = x.notna() & y.notna()
+            xv = x[mask].to_numpy(dtype=float)
+            yv = y[mask].to_numpy(dtype=float)
+            if xv.size == 0:
+                ax2.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax2.transAxes)
+                ax2.set_xlabel(dmet)
+                ax2.set_ylabel(lmet)
+                ax2.grid(True, linestyle=":", alpha=0.4)
+                continue
+            colors = {"Claude 4.1 Opus": "#4C78A8", "ChatGPT-5": "#F58518", "Gemini Pro 2.5": "#54A24B"}
+            models_present = [m for m in ["Claude 4.1 Opus", "ChatGPT-5", "Gemini Pro 2.5"] if m in merged["model"].unique().tolist()]
+            for m in models_present:
+                sub = merged[merged["model"] == m]
+                x_m = pd.to_numeric(sub[dcol], errors="coerce")
+                y_m = pd.to_numeric(sub[lcol], errors="coerce")
+                mask_m = x_m.notna() & y_m.notna()
+                xv_m = x_m[mask_m].to_numpy(dtype=float)
+                yv_m = y_m[mask_m].to_numpy(dtype=float)
+                if xv_m.size == 0:
+                    continue
+                ax2.scatter(xv_m, yv_m, s=20, alpha=0.7, color=colors.get(m), label=m)
+                try:
+                    coef_m = np.polyfit(xv_m, yv_m, 1)
+                    xx_m = np.linspace(np.nanmin(xv_m), np.nanmax(xv_m), 30)
+                    yy_m = coef_m[0] * xx_m + coef_m[1]
+                    ax2.plot(xx_m, yy_m, color=colors.get(m), linewidth=1.4)
+                except Exception:
+                    pass
+            # overall r/p saved already above (no need to add twice)
+            ax2.set_xlabel(dmet)
+            ax2.set_ylabel(lmet)
+            ax2.grid(True, linestyle=":", alpha=0.4)
+
+        used_ls = min(n, len(plot_positions_ls)) + 1
+        total_ls = rows_ls * cols_ls
+        if used_ls < total_ls:
+            for j in range(used_ls, total_ls):
+                rls = j // cols_ls
+                cls = j % cols_ls
+                axes2[rls, cls].set_visible(False)
+
+        fig2.suptitle(f"Correlation: Layperson {lmet} vs Clinician metrics", y=0.98, fontsize=16)
+        fig2.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])
+        base_ls = os.path.join(outdir, f"exp4_corr_{lmet.replace(' ', '_').lower()}_landscape")
+        fig2.savefig(base_ls + ".pdf", dpi=300, bbox_inches="tight")
+        fig2.savefig(base_ls + ".png", dpi=300, bbox_inches="tight")
+        plt.close(fig2)
+
     # Write correlation CSV (per model and overall)
     if corr_rows:
         corr_df = pd.DataFrame(corr_rows)
